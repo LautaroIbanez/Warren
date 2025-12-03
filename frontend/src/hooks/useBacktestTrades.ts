@@ -18,6 +18,11 @@ export function useBacktestTrades() {
     try {
       setLoading(true);
       setError(null);
+      // Limpiar datos previos antes de cargar nuevos
+      setTrades([]);
+      setEquityCurve([]);
+      setMetrics(null);
+      
       const result = await fetchBacktest();
       setTrades(result.trades || []);
       setEquityCurve(result.equity_curve || []);

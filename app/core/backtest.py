@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 
 from app.core.strategy import StrategyEngine, Signal, Recommendation
+from app.config import settings
 
 
 @dataclass
@@ -19,8 +20,13 @@ class Trade:
     take_profit: float
     signal: Signal
     confidence: float
-    pnl: Optional[float] = None
-    pnl_pct: Optional[float] = None
+    position_size: Optional[float] = None  # Tamaño de posición en unidades
+    position_value: Optional[float] = None  # Valor de posición en capital
+    entry_fee: Optional[float] = None  # Fee pagado al entrar
+    exit_fee: Optional[float] = None  # Fee pagado al salir
+    slippage_cost: Optional[float] = None  # Costo de slippage
+    pnl: Optional[float] = None  # P&L nominal (después de fees)
+    pnl_pct: Optional[float] = None  # P&L porcentual sobre capital
     exit_reason: Optional[str] = None
     
     def to_dict(self) -> dict:
@@ -49,6 +55,11 @@ class Trade:
             "take_profit": float(self.take_profit) if self.take_profit is not None else None,
             "signal": self.signal.value,
             "confidence": float(self.confidence) if self.confidence is not None else None,
+            "position_size": float(self.position_size) if self.position_size is not None else None,
+            "position_value": float(self.position_value) if self.position_value is not None else None,
+            "entry_fee": float(self.entry_fee) if self.entry_fee is not None else None,
+            "exit_fee": float(self.exit_fee) if self.exit_fee is not None else None,
+            "slippage_cost": float(self.slippage_cost) if self.slippage_cost is not None else None,
             "pnl": float(self.pnl) if self.pnl is not None else None,
             "pnl_pct": float(self.pnl_pct) if self.pnl_pct is not None else None,
             "exit_reason": self.exit_reason
@@ -93,7 +104,10 @@ class BacktestEngine:
     
     def __init__(self, strategy_engine: Optional[StrategyEngine] = None):
         self.strategy_engine = strategy_engine or StrategyEngine()
-        self.initial_capital = 10000.0  # Capital inicial para simulación
+        self.initial_capital = settings.INITIAL_CAPITAL
+        self.position_size_pct = settings.POSITION_SIZE_PCT / 100.0  # Convertir % a decimal
+        self.trading_fee_pct = settings.TRADING_FEE_PCT / 100.0
+        self.slippage_pct = settings.SLIPPAGE_PCT / 100.0
     
     def run(
         self,
@@ -154,15 +168,35 @@ class BacktestEngine:
                 if recommendation.signal in [Signal.BUY, Signal.SELL]:
                     # Verificar que tenemos SL/TP válidos
                     if recommendation.stop_loss and recommendation.take_profit:
+                        entry_price_base = recommendation.entry_price or float(candle['close'])
+                        
+                        # Aplicar slippage al precio de entrada
+                        if recommendation.signal == Signal.BUY:
+                            entry_price = entry_price_base * (1 + self.slippage_pct)  # Pagar más al comprar
+                        else:  # SELL
+                            entry_price = entry_price_base * (1 - self.slippage_pct)  # Recibir menos al vender
+                        
+                        # Calcular tamaño de posición basado en porcentaje del capital actual
+                        position_value = equity * self.position_size_pct
+                        position_size = position_value / entry_price  # Unidades
+                        
+                        # Calcular fees de entrada
+                        entry_fee = position_value * self.trading_fee_pct
+                        
                         current_trade = Trade(
                             entry_time=pd.to_datetime(candle['timestamp']),
                             exit_time=None,
-                            entry_price=recommendation.entry_price or float(candle['close']),
+                            entry_price=entry_price,
                             exit_price=None,
                             stop_loss=recommendation.stop_loss,
                             take_profit=recommendation.take_profit,
                             signal=recommendation.signal,
                             confidence=recommendation.confidence,
+                            position_size=position_size,
+                            position_value=position_value,
+                            entry_fee=entry_fee,
+                            exit_fee=None,
+                            slippage_cost=position_value * self.slippage_pct,
                             exit_reason=None
                         )
             
@@ -174,23 +208,44 @@ class BacktestEngine:
                 )
                 
                 if exit_price is not None:
+                    # Aplicar slippage al precio de salida
+                    if current_trade.signal == Signal.BUY:
+                        exit_price_with_slippage = exit_price * (1 - self.slippage_pct)  # Recibir menos al vender
+                    else:  # SELL
+                        exit_price_with_slippage = exit_price * (1 + self.slippage_pct)  # Pagar más al comprar
+                    
                     # Cerrar trade
                     current_trade.exit_time = pd.to_datetime(candle['timestamp'])
-                    current_trade.exit_price = exit_price
+                    current_trade.exit_price = exit_price_with_slippage
                     current_trade.exit_reason = exit_reason
                     
-                    # Calcular P&L
-                    if current_trade.signal == Signal.BUY:
-                        pnl = exit_price - current_trade.entry_price
-                    else:  # SELL
-                        pnl = current_trade.entry_price - exit_price
+                    # Calcular valor de salida
+                    exit_value = current_trade.position_size * exit_price_with_slippage
                     
-                    pnl_pct = (pnl / current_trade.entry_price) * 100
-                    current_trade.pnl = round(pnl, 2)
+                    # Calcular fees de salida
+                    exit_fee = exit_value * self.trading_fee_pct
+                    current_trade.exit_fee = exit_fee
+                    
+                    # Calcular P&L nominal (después de fees y slippage)
+                    if current_trade.signal == Signal.BUY:
+                        # Compramos a entry_price, vendemos a exit_price_with_slippage
+                        gross_pnl = exit_value - current_trade.position_value
+                    else:  # SELL (short)
+                        # Vendemos a entry_price, compramos a exit_price_with_slippage
+                        gross_pnl = current_trade.position_value - exit_value
+                    
+                    # P&L neto después de todos los costos
+                    total_costs = current_trade.entry_fee + exit_fee + current_trade.slippage_cost
+                    net_pnl = gross_pnl - total_costs
+                    
+                    # P&L porcentual sobre el capital usado (position_value)
+                    pnl_pct = (net_pnl / current_trade.position_value) * 100 if current_trade.position_value > 0 else 0
+                    
+                    current_trade.pnl = round(net_pnl, 2)
                     current_trade.pnl_pct = round(pnl_pct, 2)
                     
-                    # Actualizar equity
-                    equity += pnl
+                    # Actualizar equity con capital compuesto
+                    equity += net_pnl
                     trades.append(current_trade)
                     current_trade = None
             
@@ -210,18 +265,43 @@ class BacktestEngine:
         # Cerrar trade abierto al final si existe
         if current_trade is not None:
             last_candle = candles.iloc[-1]
+            exit_price_base = float(last_candle['close'])
+            
+            # Aplicar slippage al precio de salida
+            if current_trade.signal == Signal.BUY:
+                exit_price_with_slippage = exit_price_base * (1 - self.slippage_pct)
+            else:  # SELL
+                exit_price_with_slippage = exit_price_base * (1 + self.slippage_pct)
+            
             current_trade.exit_time = pd.to_datetime(last_candle['timestamp'])
-            current_trade.exit_price = float(last_candle['close'])
+            current_trade.exit_price = exit_price_with_slippage
             current_trade.exit_reason = "End of data"
             
-            if current_trade.signal == Signal.BUY:
-                pnl = current_trade.exit_price - current_trade.entry_price
-            else:
-                pnl = current_trade.entry_price - current_trade.exit_price
+            # Calcular valor de salida
+            exit_value = current_trade.position_size * exit_price_with_slippage
             
-            pnl_pct = (pnl / current_trade.entry_price) * 100
-            current_trade.pnl = round(pnl, 2)
+            # Calcular fees de salida
+            exit_fee = exit_value * self.trading_fee_pct
+            current_trade.exit_fee = exit_fee
+            
+            # Calcular P&L nominal (después de fees y slippage)
+            if current_trade.signal == Signal.BUY:
+                gross_pnl = exit_value - current_trade.position_value
+            else:  # SELL (short)
+                gross_pnl = current_trade.position_value - exit_value
+            
+            # P&L neto después de todos los costos
+            total_costs = current_trade.entry_fee + exit_fee + current_trade.slippage_cost
+            net_pnl = gross_pnl - total_costs
+            
+            # P&L porcentual sobre el capital usado
+            pnl_pct = (net_pnl / current_trade.position_value) * 100 if current_trade.position_value > 0 else 0
+            
+            current_trade.pnl = round(net_pnl, 2)
             current_trade.pnl_pct = round(pnl_pct, 2)
+            
+            # Actualizar equity
+            equity += net_pnl
             trades.append(current_trade)
         
         # Calcular métricas
@@ -285,48 +365,85 @@ class BacktestEngine:
                 "reason": "No trades generated"
             }
         
-        # Trades ganadores y perdedores
-        winning_trades = [t for t in trades if t.pnl and t.pnl > 0]
-        losing_trades = [t for t in trades if t.pnl and t.pnl <= 0]
+        # Trades ganadores y perdedores (usar pnl_pct para métricas porcentuales)
+        winning_trades = [t for t in trades if t.pnl_pct and t.pnl_pct > 0]
+        losing_trades = [t for t in trades if t.pnl_pct and t.pnl_pct <= 0]
         
         total_trades = len(trades)
         win_count = len(winning_trades)
         win_rate = (win_count / total_trades) * 100 if total_trades > 0 else 0.0
         
-        # Profit factor
-        total_profit = sum(t.pnl for t in winning_trades) if winning_trades else 0.0
-        total_loss = abs(sum(t.pnl for t in losing_trades)) if losing_trades else 0.0
-        profit_factor = total_profit / total_loss if total_loss > 0 else 0.0
+        # Profit factor (usar P&L porcentual para reflejar retorno sobre capital)
+        # Sumamos los pnl_pct ponderados por el valor de posición
+        total_profit_pct_weighted = sum(
+            t.pnl_pct * (t.position_value or 0) / 100.0 
+            for t in winning_trades 
+            if t.pnl_pct is not None and t.position_value
+        ) if winning_trades else 0.0
         
-        # Expectancy
-        avg_win = total_profit / win_count if win_count > 0 else 0.0
-        avg_loss = abs(total_loss / len(losing_trades)) if losing_trades else 0.0
-        expectancy = (win_rate / 100 * avg_win) - ((100 - win_rate) / 100 * avg_loss)
+        total_loss_pct_weighted = abs(sum(
+            t.pnl_pct * (t.position_value or 0) / 100.0 
+            for t in losing_trades 
+            if t.pnl_pct is not None and t.position_value
+        )) if losing_trades else 0.0
         
-        # Equity curve metrics
-        equity_values = [e['equity'] for e in equity_curve]
-        if len(equity_values) < 2:
+        # Alternativa: usar promedio de pnl_pct (más simple y refleja retorno por trade)
+        avg_profit_pct = sum(t.pnl_pct for t in winning_trades) / len(winning_trades) if winning_trades else 0.0
+        avg_loss_pct = abs(sum(t.pnl_pct for t in losing_trades) / len(losing_trades)) if losing_trades else 0.0
+        profit_factor = avg_profit_pct / avg_loss_pct if avg_loss_pct > 0 else 0.0
+        
+        # Expectancy (P&L porcentual promedio por trade)
+        total_pnl_pct = sum(t.pnl_pct for t in trades if t.pnl_pct is not None) if trades else 0.0
+        expectancy_pct = total_pnl_pct / total_trades if total_trades > 0 else 0.0
+        
+        # Expectancy en valor nominal (para compatibilidad con UI)
+        total_pnl = sum(t.pnl for t in trades if t.pnl is not None) if trades else 0.0
+        expectancy = total_pnl / total_trades if total_trades > 0 else 0.0
+        
+        # Equity curve metrics con timestamps reales
+        if len(equity_curve) < 2:
             return self._empty_metrics("Insufficient equity curve data")
         
-        initial_equity = equity_values[0]
-        final_equity = equity_values[-1]
+        # Convertir equity_curve a DataFrame para cálculos temporales
+        equity_df = pd.DataFrame(equity_curve)
+        equity_df['timestamp'] = pd.to_datetime(equity_df['timestamp'])
+        equity_df = equity_df.sort_values('timestamp').reset_index(drop=True)
+        
+        initial_equity = equity_df.iloc[0]['equity']
+        final_equity = equity_df.iloc[-1]['equity']
         total_return = ((final_equity - initial_equity) / initial_equity) * 100
         
-        # CAGR (simplificado - asumiendo período de backtest)
-        # Necesitaríamos timestamps para calcularlo correctamente
-        # Por ahora usamos total_return como aproximación
-        cagr = total_return  # Simplificado
+        # Calcular CAGR usando fechas reales
+        start_date = equity_df.iloc[0]['timestamp']
+        end_date = equity_df.iloc[-1]['timestamp']
+        years = (end_date - start_date).days / 365.25
         
-        # Sharpe Ratio (simplificado - necesitaría retornos diarios)
-        returns = [t.pnl_pct for t in trades if t.pnl_pct is not None]
-        if returns:
-            mean_return = np.mean(returns)
-            std_return = np.std(returns)
-            sharpe_ratio = (mean_return / std_return) * np.sqrt(252) if std_return > 0 else 0.0
+        if years > 0:
+            # CAGR = ((Final Value / Initial Value) ^ (1 / Years)) - 1
+            cagr = (((final_equity / initial_equity) ** (1 / years)) - 1) * 100
+        else:
+            cagr = total_return  # Si es menos de un año, usar total_return
+        
+        # Calcular Sharpe Ratio usando retornos diarios de equity_curve
+        equity_df['returns'] = equity_df['equity'].pct_change()
+        daily_returns = equity_df['returns'].dropna()
+        
+        if len(daily_returns) > 1:
+            # Sharpe = (Mean Return - Risk Free Rate) / Std Dev * sqrt(252)
+            # Asumimos risk-free rate = 0 para simplificar
+            mean_daily_return = daily_returns.mean()
+            std_daily_return = daily_returns.std()
+            
+            if std_daily_return > 0:
+                # Annualizar: multiplicar por sqrt(252) para días de trading
+                sharpe_ratio = (mean_daily_return / std_daily_return) * np.sqrt(252) * 100  # En porcentaje
+            else:
+                sharpe_ratio = 0.0
         else:
             sharpe_ratio = 0.0
         
-        # Max Drawdown
+        # Max Drawdown usando equity_curve
+        equity_values = equity_df['equity'].values
         peak = initial_equity
         max_drawdown = 0.0
         for equity in equity_values:
@@ -336,8 +453,25 @@ class BacktestEngine:
             if drawdown > max_drawdown:
                 max_drawdown = drawdown
         
-        # Reliability check
-        is_reliable = total_trades >= 30  # Threshold mínimo
+        # Validación de fiabilidad con umbrales
+        from app.config import settings
+        is_reliable = (
+            total_trades >= settings.MIN_TRADES_FOR_RELIABILITY and
+            profit_factor >= settings.MIN_PROFIT_FACTOR and
+            total_return > settings.MIN_TOTAL_RETURN_PCT and
+            max_drawdown <= settings.MAX_DRAWDOWN_PCT
+        )
+        
+        # Razones de no confiabilidad
+        reasons = []
+        if total_trades < settings.MIN_TRADES_FOR_RELIABILITY:
+            reasons.append(f"Only {total_trades} trades (need {settings.MIN_TRADES_FOR_RELIABILITY}+)")
+        if profit_factor < settings.MIN_PROFIT_FACTOR:
+            reasons.append(f"Profit factor {profit_factor:.2f} < {settings.MIN_PROFIT_FACTOR}")
+        if total_return <= settings.MIN_TOTAL_RETURN_PCT:
+            reasons.append(f"Total return {total_return:.2f}% <= {settings.MIN_TOTAL_RETURN_PCT}%")
+        if max_drawdown > settings.MAX_DRAWDOWN_PCT:
+            reasons.append(f"Max drawdown {max_drawdown:.2f}% > {settings.MAX_DRAWDOWN_PCT}%")
         
         return {
             "total_trades": total_trades,
@@ -348,8 +482,9 @@ class BacktestEngine:
             "sharpe_ratio": round(sharpe_ratio, 2),
             "max_drawdown": round(max_drawdown, 2),
             "total_return": round(total_return, 2),
+            "period_years": round(years, 2),
             "is_reliable": is_reliable,
-            "reason": None if is_reliable else f"Only {total_trades} trades (need 30+)"
+            "reason": None if is_reliable else "; ".join(reasons) if reasons else "Unknown"
         }
     
     def _empty_result(self, reason: str) -> BacktestResult:

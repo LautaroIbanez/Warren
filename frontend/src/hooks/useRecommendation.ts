@@ -16,6 +16,9 @@ export function useRecommendation() {
     try {
       setLoading(true);
       setError(null);
+      // Limpiar datos previos antes de cargar nuevos
+      setData(null);
+      
       const result = await fetchRecommendation();
       setData(result);
     } catch (err) {

@@ -17,6 +17,10 @@ export function useCandles() {
     try {
       setLoading(true);
       setError(null);
+      // Limpiar datos previos antes de cargar nuevos
+      setData([]);
+      setMetadata(null);
+      
       const result = await fetchCandles();
       setData(result.candles || []);
       setMetadata(result.metadata || null);

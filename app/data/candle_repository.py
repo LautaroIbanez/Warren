@@ -25,18 +25,20 @@ class CandleRepository:
         self,
         symbol: str,
         interval: str,
-        candles: pd.DataFrame
+        candles: pd.DataFrame,
+        merge_existing: bool = True
     ) -> dict:
         """
-        Guarda velas en archivo Parquet.
+        Guarda velas en archivo Parquet con merge incremental opcional.
         
         Args:
             symbol: Símbolo del par (ej: BTCUSDT)
             interval: Intervalo (ej: 1d)
             candles: DataFrame con columnas: timestamp, open, high, low, close, volume
+            merge_existing: Si True, combina con velas existentes
         
         Returns:
-            Dict con metadata del archivo guardado
+            Dict con metadata del archivo guardado (incluye from_date, to_date, window_days)
         """
         if candles.empty:
             raise ValueError("Cannot save empty candles DataFrame")
@@ -56,21 +58,42 @@ class CandleRepository:
         for col in numeric_cols:
             candles[col] = pd.to_numeric(candles[col], errors='coerce')
         
+        # Merge incremental si existe archivo previo
+        if merge_existing:
+            file_path = self._get_file_path(symbol, interval)
+            if file_path.exists():
+                try:
+                    existing_candles, _ = self.load(symbol, interval)
+                    # Combinar y eliminar duplicados (mantener el más reciente)
+                    combined = pd.concat([existing_candles, candles], ignore_index=True)
+                    combined = combined.sort_values('timestamp').reset_index(drop=True)
+                    # Eliminar duplicados por timestamp (mantener el último)
+                    combined = combined.drop_duplicates(subset=['timestamp'], keep='last')
+                    candles = combined.sort_values('timestamp').reset_index(drop=True)
+                except Exception:
+                    # Si falla cargar existente, continuar con nuevas velas
+                    pass
+        
         # Guardar Parquet
         file_path = self._get_file_path(symbol, interval)
         candles.to_parquet(file_path, index=False, engine='pyarrow')
         
         # Obtener metadata
+        earliest_timestamp = candles['timestamp'].min()
         latest_timestamp = candles['timestamp'].max()
         row_count = len(candles)
+        window_days = (latest_timestamp - earliest_timestamp).days
         
-        # Calcular hash simple del contenido (usando timestamp de última vela)
-        file_hash = str(hash(str(latest_timestamp) + str(row_count)))
+        # Calcular hash simple del contenido
+        file_hash = str(hash(str(latest_timestamp) + str(row_count) + str(earliest_timestamp)))
         
         return {
             "file_path": str(file_path),
+            "from_date": earliest_timestamp.isoformat() if pd.notna(earliest_timestamp) else None,
+            "to_date": latest_timestamp.isoformat() if pd.notna(latest_timestamp) else None,
             "as_of": latest_timestamp.isoformat() if pd.notna(latest_timestamp) else None,
             "rows": row_count,
+            "window_days": window_days,
             "source_file_hash": file_hash
         }
     
@@ -118,15 +141,20 @@ class CandleRepository:
         # Ordenar por timestamp
         candles = candles.sort_values('timestamp').reset_index(drop=True)
         
-        # Metadata
+        # Metadata con rango temporal
+        earliest_timestamp = candles['timestamp'].min()
         latest_timestamp = candles['timestamp'].max()
         row_count = len(candles)
-        file_hash = str(hash(str(latest_timestamp) + str(row_count)))
+        window_days = (latest_timestamp - earliest_timestamp).days
+        file_hash = str(hash(str(latest_timestamp) + str(row_count) + str(earliest_timestamp)))
         
         metadata = {
             "file_path": str(file_path),
+            "from_date": earliest_timestamp.isoformat() if pd.notna(earliest_timestamp) else None,
+            "to_date": latest_timestamp.isoformat() if pd.notna(latest_timestamp) else None,
             "as_of": latest_timestamp.isoformat() if pd.notna(latest_timestamp) else None,
             "rows": row_count,
+            "window_days": window_days,
             "source_file_hash": file_hash,
             "exists": True
         }

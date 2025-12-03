@@ -10,11 +10,23 @@ export interface Recommendation {
   take_profit: number | null;
   rationale: string;
   as_of?: string;
+  signal_timestamp?: string;  // Timestamp de la vela usada para generar la señal
+  candles_hash?: string;  // Hash de las velas usadas
+  is_stale_signal?: boolean;  // Si la señal está basada en datos antiguos
+  stale_reason?: string;  // Razón por la que la señal está stale
+  is_blocked?: boolean;  // Si la señal fue bloqueada por backtest negativo
+  block_reason?: string;  // Razón por la que la señal fue bloqueada
   data_freshness?: {
     as_of: string;
     is_stale: boolean;
     hours_old: number;
     reason: string;
+  };
+  data_window?: {
+    from_date: string;
+    to_date: string;
+    window_days: number;
+    is_sufficient: boolean;
   };
 }
 
@@ -50,6 +62,7 @@ export interface BacktestMetrics {
   sharpe_ratio: number;
   max_drawdown: number;
   total_return: number;
+  period_years?: number;
   is_reliable: boolean;
   reason: string | null;
 }
@@ -62,6 +75,30 @@ export interface RiskMetrics {
     min_trades_required: number;
     min_window_days: number;
     is_reliable: boolean;
+  };
+  data_window?: {
+    from_date: string;
+    to_date: string;
+    window_days: number;
+  };
+  cache_info?: {
+    cached: boolean;
+    computed: boolean;
+    was_recomputed?: boolean;
+    previous_cache_validation?: {
+      is_stale: boolean;
+      is_inconsistent: boolean;
+      reason: string;
+      cached_hash?: string;
+      current_hash?: string;
+    };
+    cache_validation?: {
+      is_stale: boolean;
+      is_inconsistent: boolean;
+      reason: string;
+      cached_hash?: string;
+      current_hash?: string;
+    };
   };
   status: "ok" | "degraded";
   reason: string | null;

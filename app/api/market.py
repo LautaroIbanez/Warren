@@ -41,11 +41,23 @@ async def get_candles(
         if freshness and freshness.get('is_stale'):
             warnings.append(freshness.get('reason', 'Data may be stale'))
         
+        # Obtener timestamp de última vela
+        latest_candle = candles.iloc[-1] if not candles.empty else None
+        latest_candle_timestamp = None
+        if latest_candle is not None and 'timestamp' in latest_candle:
+            latest_candle_timestamp = latest_candle['timestamp']
+            if hasattr(latest_candle_timestamp, 'isoformat'):
+                latest_candle_timestamp = latest_candle_timestamp.isoformat()
+            else:
+                latest_candle_timestamp = str(latest_candle_timestamp)
+        
         return {
             "candles": candles_list,
             "metadata": {
                 **metadata,
-                "freshness": freshness
+                "freshness": freshness,
+                "latest_candle_timestamp": latest_candle_timestamp,
+                "candles_hash": metadata.get("source_file_hash")
             },
             "warnings": warnings
         }

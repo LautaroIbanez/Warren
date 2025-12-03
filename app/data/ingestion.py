@@ -74,24 +74,28 @@ class IngestionWorker:
     def refresh(
         self,
         symbol: Optional[str] = None,
-        interval: Optional[str] = None
+        interval: Optional[str] = None,
+        merge_existing: bool = True
     ) -> dict:
         """
-        Refresca datos: descarga velas de Binance y las guarda.
+        Refresca datos: descarga velas de Binance y las guarda con merge incremental.
         
         Args:
             symbol: Símbolo (default: config)
             interval: Intervalo (default: config)
+            merge_existing: Si True, combina con velas existentes
         
         Returns:
-            Dict con resultado de la operación
+            Dict con resultado de la operación incluyendo validación
         """
+        from app.data.validation import validate_data_quality
+        
         symbol = symbol or settings.DEFAULT_SYMBOL
         interval = interval or settings.DEFAULT_INTERVAL
         
         try:
-            # Descargar velas
-            candles = self.fetch_klines(symbol, interval, limit=500)
+            # Descargar velas (máximo 1000 de Binance)
+            candles = self.fetch_klines(symbol, interval, limit=1000)
             
             if candles.empty:
                 return {
@@ -99,23 +103,38 @@ class IngestionWorker:
                     "symbol": symbol,
                     "interval": interval,
                     "error": "No candles received from Binance",
-                    "warnings": []
+                    "warnings": [],
+                    "validation": {"status": "ERROR", "errors": ["No data received"]}
                 }
             
-            # Verificar gaps básicos
-            warnings = []
-            if len(candles) < 100:
-                warnings.append(f"Only {len(candles)} candles received (expected more)")
+            # Guardar con merge incremental
+            metadata = self.candle_repo.save(symbol, interval, candles, merge_existing=merge_existing)
             
-            # Guardar
-            metadata = self.candle_repo.save(symbol, interval, candles)
+            # Cargar velas completas (después del merge) para validación
+            merged_candles, _ = self.candle_repo.load(symbol, interval)
+            
+            # Validar calidad de datos
+            validation = validate_data_quality(merged_candles, interval)
+            
+            # Actualizar metadata con validación
+            metadata.update({
+                "validation_status": validation["status"],
+                "is_valid": validation["is_valid"]
+            })
+            
+            warnings = []
+            if validation["warnings"]:
+                warnings.extend(validation["warnings"])
+            if len(candles) < 100:
+                warnings.append(f"Only {len(candles)} new candles received (expected more)")
             
             return {
                 "success": True,
                 "symbol": symbol,
                 "interval": interval,
                 "metadata": metadata,
-                "warnings": warnings
+                "warnings": warnings,
+                "validation": validation
             }
         
         except Exception as e:
@@ -124,6 +143,7 @@ class IngestionWorker:
                 "symbol": symbol,
                 "interval": interval,
                 "error": str(e),
-                "warnings": []
+                "warnings": [],
+                "validation": {"status": "ERROR", "errors": [str(e)]}
             }
 

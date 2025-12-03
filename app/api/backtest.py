@@ -10,6 +10,7 @@ from app.core.backtest import BacktestEngine
 from app.core.strategy import StrategyEngine
 from app.data.candle_repository import CandleRepository
 from app.data.backtest_repository import BacktestRepository
+from app.data.validation import validate_data_window
 
 router = APIRouter(prefix="/backtest", tags=["backtest"])
 
@@ -32,45 +33,116 @@ async def get_latest_backtest(
     candle_repo = CandleRepository()
     backtest_repo = BacktestRepository()
     
+    # Obtener metadata de velas actuales para validación
+    candles_hash = None
+    candles_as_of = None
+    try:
+        _, candle_metadata = candle_repo.load(symbol, interval)
+        candles_hash = candle_metadata.get("source_file_hash")
+        candles_as_of = candle_metadata.get("as_of")
+    except Exception:
+        pass  # Si no hay velas, continuar sin validación
+    
     # Intentar cargar cached si no se fuerza refresh
     if not force_refresh:
-        cached = backtest_repo.load(symbol, interval)
-        if cached:
+        cached, validation_info = backtest_repo.load(symbol, interval, candles_hash, candles_as_of)
+        # Solo usar cache si es válido (no stale, no inconsistente)
+        if cached and not validation_info.get("is_stale") and not validation_info.get("is_inconsistent"):
             return {
                 "cached": True,
+                "computed": False,
+                "cache_validation": validation_info,
                 **cached
             }
+        # Si cache está obsoleto, continuar para recomputar
     
     try:
         # Cargar velas
         candles, metadata = candle_repo.load(symbol, interval)
         
-        # Ejecutar backtest
+        # Validar ventana temporal mínima
+        is_valid, error_msg, window_metadata = validate_data_window(candles)
+        
+        if not is_valid:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "INSUFFICIENT_DATA",
+                    "message": error_msg,
+                    "symbol": symbol,
+                    "interval": interval,
+                    "metadata": window_metadata
+                }
+            )
+        
+        # Validar gaps en datos
+        is_valid_gaps, gaps, gaps_metadata = validate_gaps(candles, interval)
+        if not is_valid_gaps and gaps:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "DATA_GAPS",
+                    "message": f"Data contains {len(gaps)} gaps exceeding maximum allowed ({gaps_metadata.get('max_gap_days')} days). Backtest may be invalid.",
+                    "symbol": symbol,
+                    "interval": interval,
+                    "gaps": gaps,
+                    "metadata": gaps_metadata
+                }
+            )
+        
+        # Ejecutar backtest (recomputar)
         strategy_engine = StrategyEngine()
         backtest_engine = BacktestEngine(strategy_engine)
         result = backtest_engine.run(symbol, interval, candles)
         
-        # Guardar resultado
+        # Obtener hash y timestamp actualizados
+        current_hash = metadata.get("source_file_hash")
+        current_as_of = metadata.get("as_of")
+        if current_as_of and hasattr(current_as_of, 'isoformat'):
+            current_as_of = current_as_of.isoformat()
+        elif current_as_of:
+            current_as_of = str(current_as_of)
+        
+        # Guardar resultado con metadata actualizada
         backtest_repo.save(
             symbol=symbol,
             interval=interval,
             result=result,
-            candles_hash=metadata.get("source_file_hash"),
-            candles_timestamp=metadata.get("as_of")
+            candles_hash=current_hash,
+            candles_timestamp=current_as_of
         )
         
         # Preparar respuesta (asegurar serialización JSON)
         response = result.to_dict()
         response["cached"] = False
+        response["computed"] = True
         # Convertir metadata timestamps a strings
-        candles_as_of = metadata.get("as_of")
-        if candles_as_of and hasattr(candles_as_of, 'isoformat'):
-            candles_as_of = candles_as_of.isoformat()
+        candles_as_of_str = metadata.get("as_of")
+        if candles_as_of_str and hasattr(candles_as_of_str, 'isoformat'):
+            candles_as_of_str = candles_as_of_str.isoformat()
+        elif candles_as_of_str:
+            candles_as_of_str = str(candles_as_of_str)
+        
         response["metadata"] = {
             "symbol": symbol,
             "interval": interval,
             "candles_hash": str(metadata.get("source_file_hash", "")),
-            "candles_as_of": str(candles_as_of) if candles_as_of else None
+            "candles_as_of": candles_as_of_str,
+            "data_window": {
+                "from_date": metadata.get("from_date"),
+                "to_date": metadata.get("to_date"),
+                "window_days": metadata.get("window_days"),
+                "is_sufficient": True
+            }
+        }
+        response["cache_validation"] = {
+            "is_stale": False,
+            "is_inconsistent": False,
+            "reason": "Freshly computed",
+            "cached_hash": None,
+            "current_hash": str(metadata.get("source_file_hash", "")),
+            "cached_as_of": None,
+            "current_as_of": candles_as_of_str
         }
         
         # Añadir warning si no hay trades
