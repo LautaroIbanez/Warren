@@ -1,0 +1,22 @@
+/* Estilos adicionales para componentes */
+
+.risk-panel {
+  padding: 20px;
+}
+
+.metrics-grid {
+  margin-top: 20px;
+}
+
+.chart-tooltip {
+  background: white;
+  padding: 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.chart-tooltip p {
+  margin: 5px 0;
+  color: #333;
+}
