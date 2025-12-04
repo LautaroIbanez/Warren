@@ -10,7 +10,7 @@ from app.core.backtest import BacktestEngine
 from app.core.strategy import StrategyEngine
 from app.data.candle_repository import CandleRepository
 from app.data.backtest_repository import BacktestRepository
-from app.data.validation import validate_data_window
+from app.data.validation import validate_data_window, validate_gaps
 
 router = APIRouter(prefix="/backtest", tags=["backtest"])
 

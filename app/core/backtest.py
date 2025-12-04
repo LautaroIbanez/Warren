@@ -156,51 +156,8 @@ class BacktestEngine:
             candle = candles.iloc[i]
             prev_candles = candles.iloc[:i+1]
             
-            # Si no hay trade abierto, buscar señal
-            if current_trade is None:
-                recommendation = self.strategy_engine.generate_recommendation(
-                    symbol=symbol,
-                    interval=interval,
-                    candles=prev_candles
-                )
-                
-                # Solo abrir trade si señal es BUY o SELL (no HOLD)
-                if recommendation.signal in [Signal.BUY, Signal.SELL]:
-                    # Verificar que tenemos SL/TP válidos
-                    if recommendation.stop_loss and recommendation.take_profit:
-                        entry_price_base = recommendation.entry_price or float(candle['close'])
-                        
-                        # Aplicar slippage al precio de entrada
-                        if recommendation.signal == Signal.BUY:
-                            entry_price = entry_price_base * (1 + self.slippage_pct)  # Pagar más al comprar
-                        else:  # SELL
-                            entry_price = entry_price_base * (1 - self.slippage_pct)  # Recibir menos al vender
-                        
-                        # Calcular tamaño de posición basado en porcentaje del capital actual
-                        position_value = equity * self.position_size_pct
-                        position_size = position_value / entry_price  # Unidades
-                        
-                        # Calcular fees de entrada
-                        entry_fee = position_value * self.trading_fee_pct
-                        
-                        current_trade = Trade(
-                            entry_time=pd.to_datetime(candle['timestamp']),
-                            exit_time=None,
-                            entry_price=entry_price,
-                            exit_price=None,
-                            stop_loss=recommendation.stop_loss,
-                            take_profit=recommendation.take_profit,
-                            signal=recommendation.signal,
-                            confidence=recommendation.confidence,
-                            position_size=position_size,
-                            position_value=position_value,
-                            entry_fee=entry_fee,
-                            exit_fee=None,
-                            slippage_cost=position_value * self.slippage_pct,
-                            exit_reason=None
-                        )
-            
-            # Si hay trade abierto, verificar SL/TP
+            # Si hay trade abierto, verificar SL/TP en esta vela (NO en la misma vela donde se abrió)
+            # Esto evita lookahead bias: solo evaluamos SL/TP en velas posteriores a la entrada
             if current_trade is not None:
                 exit_price, exit_reason = self._check_exit(
                     trade=current_trade,
@@ -248,6 +205,54 @@ class BacktestEngine:
                     equity += net_pnl
                     trades.append(current_trade)
                     current_trade = None
+            
+            # Si no hay trade abierto, buscar señal (después de evaluar SL/TP si había trade)
+            # Esto asegura que abrimos en una vela y evaluamos en la siguiente
+            if current_trade is None:
+                recommendation = self.strategy_engine.generate_recommendation(
+                    symbol=symbol,
+                    interval=interval,
+                    candles=prev_candles
+                )
+                
+                # Solo abrir trade si señal es BUY o SELL (no HOLD)
+                if recommendation.signal in [Signal.BUY, Signal.SELL]:
+                    # Verificar que tenemos SL/TP válidos
+                    if recommendation.stop_loss and recommendation.take_profit:
+                        # Entrada al cierre de la vela actual (precio conocido)
+                        entry_price_base = recommendation.entry_price or float(candle['close'])
+                        
+                        # Aplicar slippage al precio de entrada
+                        if recommendation.signal == Signal.BUY:
+                            entry_price = entry_price_base * (1 + self.slippage_pct)  # Pagar más al comprar
+                        else:  # SELL
+                            entry_price = entry_price_base * (1 - self.slippage_pct)  # Recibir menos al vender
+                        
+                        # Calcular tamaño de posición basado en porcentaje del capital actual
+                        position_value = equity * self.position_size_pct
+                        position_size = position_value / entry_price  # Unidades
+                        
+                        # Calcular fees de entrada
+                        entry_fee = position_value * self.trading_fee_pct
+                        
+                        current_trade = Trade(
+                            entry_time=pd.to_datetime(candle['timestamp']),
+                            exit_time=None,
+                            entry_price=entry_price,
+                            exit_price=None,
+                            stop_loss=recommendation.stop_loss,
+                            take_profit=recommendation.take_profit,
+                            signal=recommendation.signal,
+                            confidence=recommendation.confidence,
+                            position_size=position_size,
+                            position_value=position_value,
+                            entry_fee=entry_fee,
+                            exit_fee=None,
+                            slippage_cost=position_value * self.slippage_pct,
+                            exit_reason=None
+                        )
+                        # IMPORTANTE: NO evaluamos SL/TP en esta misma vela
+                        # La evaluación se hará en la siguiente iteración (vela i+1)
             
             # Registrar equity curve (convertir timestamp a string)
             timestamp = candle['timestamp']
