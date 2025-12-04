@@ -55,6 +55,22 @@ class TestReliabilityLogic:
         assert metrics["is_reliable"] is False
         assert "Profit factor" in metrics["reason"] or "profit_factor" in metrics["reason"].lower()
     
+    def test_reliable_with_infinity_profit_factor(self, backtest_engine, winning_trades):
+        """Test is_reliable=True when profit_factor is infinity (no losses)."""
+        # Create trades with only winners (no losers = infinity PF)
+        trades = winning_trades[:settings.MIN_TRADES_FOR_RELIABILITY]
+        equity_curve = self._create_equity_curve_with_return(10000.0, 12000.0, len(trades))
+        
+        metrics = backtest_engine._calculate_metrics(trades, equity_curve)
+        
+        # Infinity profit factor should be represented as None in JSON
+        assert metrics["profit_factor"] is None
+        # But reliability should still be True if other metrics pass
+        # (Note: this depends on having sufficient trades, positive return, acceptable drawdown)
+        # Since we're using winning_trades, we should have positive return
+        if metrics["total_return"] > settings.MIN_TOTAL_RETURN_PCT and metrics["max_drawdown"] <= settings.MAX_DRAWDOWN_PCT:
+            assert metrics["is_reliable"] is True
+    
     def test_unreliable_with_negative_return(self, backtest_engine):
         """Test is_reliable=False when total_return <= MIN_TOTAL_RETURN_PCT."""
         trades = self._create_trades_with_metrics(

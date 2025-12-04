@@ -26,9 +26,9 @@ class BacktestRepository:
         return self.data_dir / filename
     
     def _calculate_hash(self, candles_hash: str, timestamp: str) -> str:
-        """Calcula hash para identificar backtest."""
+        """Calcula hash SHA256 determinístico para identificar backtest."""
         content = f"{candles_hash}_{timestamp}"
-        return hashlib.md5(content.encode()).hexdigest()[:16]
+        return hashlib.sha256(content.encode('utf-8')).hexdigest()
     
     def save(
         self,

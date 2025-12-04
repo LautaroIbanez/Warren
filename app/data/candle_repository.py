@@ -5,6 +5,7 @@ from typing import Optional
 from datetime import datetime
 import pandas as pd
 import pyarrow.parquet as pq
+import hashlib
 
 from app.config import settings
 
@@ -84,8 +85,12 @@ class CandleRepository:
         row_count = len(candles)
         window_days = (latest_timestamp - earliest_timestamp).days
         
-        # Calcular hash simple del contenido
-        file_hash = str(hash(str(latest_timestamp) + str(row_count) + str(earliest_timestamp)))
+        # Calcular hash SHA256 determinístico del contenido de las velas
+        # Usar datos ordenados por timestamp para consistencia
+        candles_sorted = candles.sort_values('timestamp').reset_index(drop=True)
+        # Crear string representativo del contenido (timestamp, OHLCV)
+        content_str = candles_sorted[['timestamp', 'open', 'high', 'low', 'close', 'volume']].to_csv(index=False)
+        file_hash = hashlib.sha256(content_str.encode('utf-8')).hexdigest()
         
         return {
             "file_path": str(file_path),
@@ -146,7 +151,11 @@ class CandleRepository:
         latest_timestamp = candles['timestamp'].max()
         row_count = len(candles)
         window_days = (latest_timestamp - earliest_timestamp).days
-        file_hash = str(hash(str(latest_timestamp) + str(row_count) + str(earliest_timestamp)))
+        
+        # Calcular hash SHA256 determinístico del contenido de las velas
+        candles_sorted = candles.sort_values('timestamp').reset_index(drop=True)
+        content_str = candles_sorted[['timestamp', 'open', 'high', 'low', 'close', 'volume']].to_csv(index=False)
+        file_hash = hashlib.sha256(content_str.encode('utf-8')).hexdigest()
         
         metadata = {
             "file_path": str(file_path),

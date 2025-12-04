@@ -48,10 +48,13 @@ async def get_latest_backtest(
         cached, validation_info = backtest_repo.load(symbol, interval, candles_hash, candles_as_of)
         # Solo usar cache si es válido (no stale, no inconsistente)
         if cached and not validation_info.get("is_stale") and not validation_info.get("is_inconsistent"):
+            metadata = cached.get("metadata", {})
             return {
                 "cached": True,
                 "computed": False,
                 "cache_validation": validation_info,
+                "candles_hash": metadata.get("candles_hash"),
+                "backtest_hash": metadata.get("backtest_hash"),
                 **cached
             }
         # Si cache está obsoleto, continuar para recomputar
@@ -104,7 +107,7 @@ async def get_latest_backtest(
             current_as_of = str(current_as_of)
         
         # Guardar resultado con metadata actualizada
-        backtest_repo.save(
+        save_result = backtest_repo.save(
             symbol=symbol,
             interval=interval,
             result=result,
@@ -123,10 +126,13 @@ async def get_latest_backtest(
         elif candles_as_of_str:
             candles_as_of_str = str(candles_as_of_str)
         
+        backtest_hash = save_result.get("backtest_hash")
+        
         response["metadata"] = {
             "symbol": symbol,
             "interval": interval,
             "candles_hash": str(metadata.get("source_file_hash", "")),
+            "backtest_hash": backtest_hash,
             "candles_as_of": candles_as_of_str,
             "data_window": {
                 "from_date": metadata.get("from_date"),
@@ -135,6 +141,8 @@ async def get_latest_backtest(
                 "is_sufficient": True
             }
         }
+        response["candles_hash"] = str(metadata.get("source_file_hash", ""))
+        response["backtest_hash"] = backtest_hash
         response["cache_validation"] = {
             "is_stale": False,
             "is_inconsistent": False,

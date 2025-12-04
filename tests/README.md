@@ -14,12 +14,17 @@ This directory contains automated tests for the Warren trading system.
 - `test_edge_cases.py`: Edge case tests with deterministic candle fixtures (no trades, single winner/loser, breakeven)
 - `test_stale_cache_integration.py`: Integration tests for stale cache scenarios
 - `test_refresh_snapshots.py`: Snapshot/regression tests for refresh pipeline consistency
+- `test_comprehensive_policy.py`: Comprehensive policy violation integration tests
+- `test_hash_determinism.py`: Deterministic hash tests for identical candle data
+- `test_policy_violations.py`: Unit tests for individual policy violation checks
 
 ### Frontend Tests
 
 - `src/test/mocks/api.ts`: Mock API responses for testing
 - `src/components/__tests__/RiskPanel.test.tsx`: Unit tests for RiskPanel component
 - `src/pages/__tests__/Dashboard.test.tsx`: Unit tests for Dashboard component
+- `src/pages/__tests__/Dashboard.snapshot.test.tsx`: Snapshot tests for Dashboard rendering
+- `src/pages/__tests__/Dashboard.dom.test.tsx`: DOM structure tests for Dashboard
 - `e2e/dashboard.spec.ts`: Playwright E2E tests for Dashboard UI
 
 ## Running Tests
@@ -71,6 +76,18 @@ npm install
 npm test
 ```
 
+#### Run Unit Tests in Watch Mode
+
+```bash
+npm test -- --watch
+```
+
+#### Run Unit Tests Headlessly (for CI)
+
+```bash
+npm test -- --run
+```
+
 #### Run Unit Tests with UI
 
 ```bash
@@ -81,6 +98,27 @@ npm run test:ui
 
 ```bash
 npm run test:e2e
+```
+
+#### Run E2E Tests Headlessly
+
+```bash
+npx playwright test
+```
+
+### CI/CD
+
+The test suite runs automatically on push/PR via GitHub Actions (`.github/workflows/test.yml`).
+
+To run tests locally in CI mode:
+```bash
+# Backend
+pytest tests/ -v --tb=short
+
+# Frontend
+cd frontend
+npm test -- --run
+npx playwright test
 ```
 
 ## Test Coverage

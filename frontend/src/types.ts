@@ -11,7 +11,8 @@ export interface Recommendation {
   rationale: string;
   as_of?: string;
   signal_timestamp?: string;  // Timestamp de la vela usada para generar la señal
-  candles_hash?: string;  // Hash de las velas usadas
+  candles_hash?: string;  // Hash SHA256 de las velas usadas
+  backtest_hash?: string;  // Hash SHA256 del backtest usado
   is_stale_signal?: boolean;  // Si la señal está basada en datos antiguos
   stale_reason?: string;  // Razón por la que la señal está stale
   is_blocked?: boolean;  // Si la señal fue bloqueada por evaluación de riesgo
@@ -30,6 +31,12 @@ export interface Recommendation {
     window_days: number;
     is_sufficient: boolean;
   };
+  backtest_period?: {
+    from_date: string;
+    to_date: string;
+    window_days: number;
+  };
+  last_updated?: string;
 }
 
 export interface Candle {
@@ -58,10 +65,13 @@ export interface Trade {
 export interface BacktestMetrics {
   total_trades: number;
   win_rate: number;
-  profit_factor: number;
+  profit_factor: number | null; // null represents infinity
   expectancy: number;
-  cagr: number;
-  sharpe_ratio: number;
+  expectancy_units?: string; // Currency units (e.g., "USD")
+  cagr: number | null; // null if period < 1 year
+  cagr_label?: string; // Label indicating if annualized or not
+  sharpe_ratio: number | null; // null if insufficient data
+  sharpe_reason?: string; // Reason if sharpe_ratio is null
   max_drawdown: number;
   total_return: number;
   period_years?: number;
@@ -83,6 +93,14 @@ export interface RiskMetrics {
     to_date: string;
     window_days: number;
   };
+  backtest_period?: {
+    from_date: string;
+    to_date: string;
+    window_days: number;
+  };
+  candles_hash?: string;  // Hash SHA256 de las velas usadas
+  backtest_hash?: string;  // Hash SHA256 del backtest usado
+  last_updated?: string;  // Última actualización de los datos
   cache_info?: {
     cached: boolean;
     computed: boolean;

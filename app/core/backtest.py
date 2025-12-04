@@ -1,11 +1,13 @@
 """BacktestEngine - Simula trades usando señales de StrategyEngine."""
 from typing import Optional, Dict, List
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from datetime import datetime
 import pandas as pd
 import numpy as np
+import math
 
 from app.core.strategy import StrategyEngine, Signal, Recommendation
+from app.core.policy import RiskPolicy, PolicyViolation
 from app.config import settings
 
 
@@ -384,12 +386,12 @@ class BacktestEngine:
         # Profit factor: sum(positive pnl) / abs(sum(negative pnl)) usando unidades consistentes (nominal)
         total_gross_profit = sum(t.pnl for t in winning_trades if t.pnl is not None) if winning_trades else 0.0
         total_gross_loss = abs(sum(t.pnl for t in losing_trades if t.pnl is not None)) if losing_trades else 0.0
-        # Si no hay pérdidas, profit factor es muy alto (representa infinito para JSON)
+        # Si no hay pérdidas, profit factor es infinito (null para JSON, float('inf') para cálculos)
         # Si no hay ganancias, profit factor es 0
         if total_gross_loss > 0:
             profit_factor = total_gross_profit / total_gross_loss
         elif total_gross_profit > 0:
-            profit_factor = 999999.99  # Sin pérdidas pero con ganancias (representa infinito)
+            profit_factor = float('inf')  # Sin pérdidas pero con ganancias (infinito)
         else:
             profit_factor = 0.0  # Sin ganancias ni pérdidas (solo breakeven)
         
@@ -411,23 +413,36 @@ class BacktestEngine:
         total_return = ((final_equity - initial_equity) / initial_equity) * 100
         
         # Calcular CAGR usando fechas reales
+        # CAGR requiere >=1 año para ser anualizado; si es menos, usar total_return con etiqueta
         start_date = equity_df.iloc[0]['timestamp']
         end_date = equity_df.iloc[-1]['timestamp']
         years = (end_date - start_date).days / 365.25
         
-        if years > 0:
+        cagr = None
+        cagr_label = None
+        
+        if years >= 1.0:
             # CAGR = ((Final Value / Initial Value) ^ (1 / Years)) - 1
             cagr = (((final_equity / initial_equity) ** (1 / years)) - 1) * 100
+            cagr_label = "Annualized"
         else:
-            cagr = total_return  # Si es menos de un año, usar total_return
+            # Si es menos de un año, usar total_return pero etiquetar como no anualizado
+            cagr = total_return
+            cagr_label = f"Total Return (period < 1 year, not annualized)"
         
         # Calcular Sharpe Ratio usando retornos diarios de equity_curve
         # Sharpe Ratio estándar: (Mean Return - Risk Free Rate) / Std Dev * sqrt(252)
-        # Sin escalado arbitrario de porcentaje
+        # Requiere >=2 puntos de retorno para calcular desviación estándar
         equity_df['returns'] = equity_df['equity'].pct_change()
         daily_returns = equity_df['returns'].dropna()
         
-        if len(daily_returns) > 1:
+        sharpe_ratio = None
+        sharpe_reason = None
+        
+        if len(daily_returns) < 2:
+            sharpe_ratio = None
+            sharpe_reason = f"Insufficient return points: {len(daily_returns)} < 2 required"
+        else:
             # Asumimos risk-free rate = 0 para simplificar
             mean_daily_return = daily_returns.mean()
             std_daily_return = daily_returns.std()
@@ -437,9 +452,9 @@ class BacktestEngine:
                 # Sin multiplicar por 100 - Sharpe ratio es adimensional
                 sharpe_ratio = (mean_daily_return / std_daily_return) * np.sqrt(252)
             else:
-                sharpe_ratio = 0.0
-        else:
-            sharpe_ratio = 0.0
+                # Zero volatility - todos los retornos son iguales
+                sharpe_ratio = None
+                sharpe_reason = "Zero volatility: all returns are identical"
         
         # Max Drawdown usando equity_curve
         equity_values = equity_df['equity'].values
@@ -454,9 +469,15 @@ class BacktestEngine:
         
         # Validación de fiabilidad con umbrales
         from app.config import settings
+        # Profit factor infinito siempre cumple el threshold
+        profit_factor_valid = (
+            profit_factor == float('inf') or 
+            (profit_factor is not None and profit_factor >= settings.MIN_PROFIT_FACTOR)
+        )
+        
         is_reliable = (
             total_trades >= settings.MIN_TRADES_FOR_RELIABILITY and
-            profit_factor >= settings.MIN_PROFIT_FACTOR and
+            profit_factor_valid and
             total_return > settings.MIN_TOTAL_RETURN_PCT and
             max_drawdown <= settings.MAX_DRAWDOWN_PCT
         )
@@ -465,26 +486,38 @@ class BacktestEngine:
         reasons = []
         if total_trades < settings.MIN_TRADES_FOR_RELIABILITY:
             reasons.append(f"Only {total_trades} trades (need {settings.MIN_TRADES_FOR_RELIABILITY}+)")
-        if profit_factor < settings.MIN_PROFIT_FACTOR:
-            reasons.append(f"Profit factor {profit_factor:.2f} < {settings.MIN_PROFIT_FACTOR}")
+        if not profit_factor_valid:
+            if profit_factor is None:
+                reasons.append(f"Profit factor not available")
+            else:
+                reasons.append(f"Profit factor {profit_factor:.2f} < {settings.MIN_PROFIT_FACTOR}")
         if total_return <= settings.MIN_TOTAL_RETURN_PCT:
             reasons.append(f"Total return {total_return:.2f}% <= {settings.MIN_TOTAL_RETURN_PCT}%")
         if max_drawdown > settings.MAX_DRAWDOWN_PCT:
             reasons.append(f"Max drawdown {max_drawdown:.2f}% > {settings.MAX_DRAWDOWN_PCT}%")
         
-        return {
+        # Manejar profit_factor infinito para JSON (usar None en lugar de 999999.99)
+        profit_factor_json = None if profit_factor == float('inf') else round(profit_factor, 2)
+        
+        # Preparar respuesta con métricas robustas
+        result = {
             "total_trades": total_trades,
             "win_rate": round(win_rate, 2),
-            "profit_factor": round(profit_factor, 2),
+            "profit_factor": profit_factor_json,
             "expectancy": round(expectancy, 2),
-            "cagr": round(cagr, 2),
-            "sharpe_ratio": round(sharpe_ratio, 2),
+            "expectancy_units": "USD",  # Expectancy está en unidades de moneda (nominal)
+            "cagr": round(cagr, 2) if cagr is not None else None,
+            "cagr_label": cagr_label,
+            "sharpe_ratio": round(sharpe_ratio, 2) if sharpe_ratio is not None else None,
+            "sharpe_reason": sharpe_reason,
             "max_drawdown": round(max_drawdown, 2),
             "total_return": round(total_return, 2),
             "period_years": round(years, 2),
             "is_reliable": is_reliable,
             "reason": None if is_reliable else "; ".join(reasons) if reasons else "Unknown"
         }
+        
+        return result
     
     def _empty_result(self, reason: str) -> BacktestResult:
         """Retorna resultado vacío con razón."""
@@ -501,8 +534,11 @@ class BacktestEngine:
             "win_rate": 0.0,
             "profit_factor": 0.0,
             "expectancy": 0.0,
-            "cagr": 0.0,
-            "sharpe_ratio": 0.0,
+            "expectancy_units": "USD",
+            "cagr": None,
+            "cagr_label": None,
+            "sharpe_ratio": None,
+            "sharpe_reason": "No data available",
             "max_drawdown": 0.0,
             "total_return": 0.0,
             "is_reliable": False,
@@ -513,29 +549,34 @@ class BacktestEngine:
 def evaluate_risk_for_signal(
     risk_metrics: Optional[Dict],
     risk_validation: Optional[Dict] = None,
-    cache_validation: Optional[Dict] = None
+    cache_validation: Optional[Dict] = None,
+    window_days: Optional[int] = None
 ) -> Dict:
     """
     Evalúa si una señal debe ser bloqueada basándose en métricas de riesgo y validación de cache.
     
-    Esta función centraliza toda la lógica de bloqueo de señales considerando:
+    Esta función centraliza toda la lógica de bloqueo de señales usando política estructurada.
+    Considera:
     - Profit factor mínimo
     - Retorno total mínimo
     - Drawdown máximo
     - Número mínimo de trades
+    - Ventana de datos mínima
     - Confiabilidad del backtest
     - Frescura y coherencia del cache
     
     Args:
         risk_metrics: Dict con métricas de riesgo (profit_factor, total_return, max_drawdown, etc.)
-        risk_validation: Dict con validación de riesgo (is_reliable, trade_count, etc.)
+        risk_validation: Dict con validación de riesgo (is_reliable, trade_count, window_days, etc.)
         cache_validation: Dict con validación de cache (is_stale, is_inconsistent, reason, etc.)
+        window_days: Días de ventana de datos (opcional, puede venir de risk_validation)
     
     Returns:
         Dict con:
         - is_blocked: bool - Si la señal debe ser bloqueada
         - block_reason: str - Razón principal del bloqueo (None si no está bloqueada)
         - block_reasons: List[str] - Lista detallada de todas las razones de bloqueo
+        - violations: List[Dict] - Lista de violaciones estructuradas
         - is_stale: bool - Si los datos están obsoletos
         - stale_reason: str - Razón por la que los datos están obsoletos
     """
@@ -543,6 +584,7 @@ def evaluate_risk_for_signal(
         "is_blocked": False,
         "block_reason": None,
         "block_reasons": [],
+        "violations": [],
         "is_stale": False,
         "stale_reason": None
     }
@@ -571,50 +613,40 @@ def evaluate_risk_for_signal(
         return result
     
     # Extraer métricas
-    profit_factor = risk_metrics.get("profit_factor", 0.0)
+    profit_factor = risk_metrics.get("profit_factor")
+    # Convertir None a float('inf') si es apropiado, o mantener None
+    if profit_factor is None:
+        # Verificar si debería ser infinito (no hay pérdidas pero hay ganancias)
+        # Esto se maneja en el cálculo de métricas, aquí solo validamos
+        pass
+    
     total_return = risk_metrics.get("total_return", 0.0)
     max_drawdown = risk_metrics.get("max_drawdown", 0.0)
     total_trades = risk_metrics.get("total_trades", 0)
-    is_reliable = risk_metrics.get("is_reliable", False)
     
-    # Si hay validación de riesgo, usar esos valores si están disponibles
-    if risk_validation:
-        total_trades = risk_validation.get("trade_count", total_trades)
-        is_reliable = risk_validation.get("is_reliable", is_reliable)
+    # Obtener window_days de risk_validation o parámetro
+    window_days_value = window_days
+    if risk_validation and window_days_value is None:
+        window_days_value = risk_validation.get("window_days")
     
-    # Evaluar criterios de bloqueo
-    block_reasons = []
+    # Evaluar política usando RiskPolicy
+    violations = RiskPolicy.evaluate_all(
+        total_trades=total_trades,
+        window_days=window_days_value,
+        profit_factor=profit_factor,
+        total_return=total_return,
+        max_drawdown=max_drawdown
+    )
     
-    # 1. Verificar número mínimo de trades
-    if total_trades < settings.MIN_TRADES_FOR_RELIABILITY:
-        reason = f"Insuficientes trades: {total_trades} < {settings.MIN_TRADES_FOR_RELIABILITY} mínimo requerido"
-        block_reasons.append(reason)
+    # Convertir violaciones a dicts para JSON
+    violation_dicts = [asdict(v) for v in violations]
+    result["violations"] = violation_dicts
     
-    # 2. Verificar confiabilidad del backtest
-    if not is_reliable:
-        reason = f"Backtest no confiable: {risk_metrics.get('reason', 'Razón desconocida')}"
-        block_reasons.append(reason)
-    
-    # 3. Verificar profit factor mínimo
-    if profit_factor < settings.MIN_PROFIT_FACTOR:
-        reason = f"Profit factor insuficiente: {profit_factor:.2f} < {settings.MIN_PROFIT_FACTOR} mínimo requerido"
-        block_reasons.append(reason)
-    
-    # 4. Verificar retorno total mínimo
-    if total_return <= settings.MIN_TOTAL_RETURN_PCT:
-        reason = f"Retorno total insuficiente: {total_return:.2f}% <= {settings.MIN_TOTAL_RETURN_PCT}% mínimo requerido"
-        block_reasons.append(reason)
-    
-    # 5. Verificar drawdown máximo
-    if max_drawdown > settings.MAX_DRAWDOWN_PCT:
-        reason = f"Drawdown máximo excedido: {max_drawdown:.2f}% > {settings.MAX_DRAWDOWN_PCT}% máximo permitido"
-        block_reasons.append(reason)
-    
-    # Si hay alguna razón de bloqueo, marcar como bloqueada
-    if block_reasons:
+    # Generar mensajes de bloqueo desde violaciones
+    if violations:
         result["is_blocked"] = True
-        result["block_reason"] = block_reasons[0]  # Primera razón como principal
-        result["block_reasons"] = block_reasons
+        result["block_reason"] = violations[0].message
+        result["block_reasons"] = [v.message for v in violations]
     
     return result
 

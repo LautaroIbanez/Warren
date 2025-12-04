@@ -7,7 +7,8 @@ import { useRiskMetrics } from "../hooks/useRiskMetrics";
 import { MarketChart } from "../components/MarketChart";
 import { RiskPanel } from "../components/RiskPanel";
 import { refreshData } from "../api/client";
-import { formatPercent, formatCurrency } from "../utils/formatting";
+import { formatPercent, formatCurrency, formatNumber } from "../utils/formatting";
+import { truncateHash, formatHash } from "../utils/hash";
 
 export function Dashboard() {
   const recommendation = useRecommendation();
@@ -200,9 +201,14 @@ export function Dashboard() {
                     {recommendation.data.rationale}
                   </div>
                 )}
-                {recommendation.data.candles_hash && (
+                {(recommendation.data.candles_hash || recommendation.data.backtest_hash) && (
                   <div style={{ marginTop: "10px", fontSize: "11px", color: "#999", fontFamily: "monospace" }}>
-                    Hash de datos: {recommendation.data.candles_hash.substring(0, 16)}...
+                    {recommendation.data.candles_hash && (
+                      <div>{formatHash(recommendation.data.candles_hash, "Hash de velas", 16)}</div>
+                    )}
+                    {recommendation.data.backtest_hash && (
+                      <div style={{ marginTop: "2px" }}>{formatHash(recommendation.data.backtest_hash, "Hash de backtest", 16)}</div>
+                    )}
                   </div>
                 )}
               </div>
@@ -247,34 +253,130 @@ export function Dashboard() {
               </div>
             )}
             
-            {!recommendation.data.is_blocked && (
-              <div style={{ fontSize: "24px", marginBottom: "15px" }}>
-                <span
-                  style={{
-                    color: getSignalColor(recommendation.data.signal),
-                    fontWeight: "bold",
-                    marginRight: "10px",
-                  }}
-                >
-                  {recommendation.data.signal}
-                </span>
+            {/* Banner de Recomendación Activa - Verde/Neutral cuando la señal está permitida */}
+            {!recommendation.data.is_blocked && recommendation.data.signal !== "HOLD" && (
+              <div style={{ 
+                background: "#d4edda", 
+                padding: "20px", 
+                marginBottom: "20px", 
+                borderRadius: "8px",
+                borderLeft: "6px solid #28a745",
+                boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
+              }}>
+                <div style={{ fontSize: "20px", fontWeight: "bold", color: "#155724", marginBottom: "15px" }}>
+                  ✅ Recomendación Activa
+                </div>
+                
+                {/* Señal y Confianza */}
+                <div style={{ marginBottom: "15px" }}>
+                  <div style={{ fontSize: "18px", fontWeight: "600", marginBottom: "8px", color: "#155724" }}>
+                    Señal: <span style={{ color: getSignalColor(recommendation.data.signal) }}>{recommendation.data.signal}</span>
+                  </div>
+                  <div style={{ fontSize: "16px", color: "#155724" }}>
+                    Confianza: <strong>{formatPercent(recommendation.data.confidence * 100, 1)}</strong>
+                  </div>
+                </div>
+                
+                {/* Precios: Entry, SL, TP */}
+                {recommendation.data.entry_price && (
+                  <div style={{ 
+                    display: "grid", 
+                    gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", 
+                    gap: "15px",
+                    marginBottom: "15px",
+                    padding: "12px",
+                    background: "rgba(255,255,255,0.5)",
+                    borderRadius: "4px"
+                  }}>
+                    <div>
+                      <div style={{ fontSize: "12px", color: "#666", marginBottom: "4px" }}>Precio de Entrada</div>
+                      <div style={{ fontSize: "16px", fontWeight: "600", color: "#155724" }}>
+                        {formatCurrency(recommendation.data.entry_price)}
+                      </div>
+                    </div>
+                    {recommendation.data.stop_loss && (
+                      <div>
+                        <div style={{ fontSize: "12px", color: "#666", marginBottom: "4px" }}>Stop Loss</div>
+                        <div style={{ fontSize: "16px", fontWeight: "600", color: "#dc3545" }}>
+                          {formatCurrency(recommendation.data.stop_loss)}
+                        </div>
+                      </div>
+                    )}
+                    {recommendation.data.take_profit && (
+                      <div>
+                        <div style={{ fontSize: "12px", color: "#666", marginBottom: "4px" }}>Take Profit</div>
+                        <div style={{ fontSize: "16px", fontWeight: "600", color: "#28a745" }}>
+                          {formatCurrency(recommendation.data.take_profit)}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                
+                {/* Resumen de Métricas */}
+                {risk.data && risk.data.metrics && (
+                  <div style={{ 
+                    marginTop: "15px", 
+                    padding: "12px", 
+                    background: "rgba(255,255,255,0.5)",
+                    borderRadius: "4px"
+                  }}>
+                    <div style={{ fontSize: "14px", fontWeight: "600", marginBottom: "8px", color: "#155724" }}>
+                      Resumen de Métricas:
+                    </div>
+                    <div style={{ 
+                      display: "grid", 
+                      gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", 
+                      gap: "10px",
+                      fontSize: "13px"
+                    }}>
+                      <div>
+                        <span style={{ color: "#666" }}>Profit Factor:</span>{" "}
+                        <strong style={{ color: "#155724" }}>
+                          {risk.data.metrics.profit_factor === null || risk.data.metrics.profit_factor === undefined
+                            ? "∞" 
+                            : formatNumber(risk.data.metrics.profit_factor)}
+                        </strong>
+                      </div>
+                      <div>
+                        <span style={{ color: "#666" }}>Win Rate:</span>{" "}
+                        <strong style={{ color: "#155724" }}>{formatPercent(risk.data.metrics.win_rate)}</strong>
+                      </div>
+                      <div>
+                        <span style={{ color: "#666" }}>Retorno Total:</span>{" "}
+                        <strong style={{ color: risk.data.metrics.total_return > 0 ? "#28a745" : "#dc3545" }}>
+                          {formatPercent(risk.data.metrics.total_return)}
+                        </strong>
+                      </div>
+                      <div>
+                        <span style={{ color: "#666" }}>Max Drawdown:</span>{" "}
+                        <strong style={{ color: risk.data.metrics.max_drawdown > 20 ? "#dc3545" : "#155724" }}>
+                          {formatPercent(risk.data.metrics.max_drawdown)}
+                        </strong>
+                      </div>
+                      <div>
+                        <span style={{ color: "#666" }}>Total Trades:</span>{" "}
+                        <strong style={{ color: "#155724" }}>{risk.data.metrics.total_trades}</strong>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            
+            {/* Display para señales HOLD o cuando no hay banner activo */}
+            {!recommendation.data.is_blocked && recommendation.data.signal === "HOLD" && (
+              <div style={{ fontSize: "24px", marginBottom: "15px", color: "#666" }}>
+                <span style={{ fontWeight: "bold", marginRight: "10px" }}>HOLD</span>
                 <span>Confianza: {formatPercent(recommendation.data.confidence * 100, 1)}</span>
               </div>
             )}
-            {recommendation.data.entry_price && (
-              <div style={{ marginBottom: "10px" }}>
-                <strong>Entry:</strong> {formatCurrency(recommendation.data.entry_price)}
-                {recommendation.data.stop_loss && (
-                  <> | <strong>SL:</strong> {formatCurrency(recommendation.data.stop_loss)}</>
-                )}
-                {recommendation.data.take_profit && (
-                  <> | <strong>TP:</strong> {formatCurrency(recommendation.data.take_profit)}</>
-                )}
+            {/* Rationale - Solo mostrar si no está bloqueado o si es información adicional */}
+            {recommendation.data.rationale && (
+              <div style={{ fontSize: "14px", color: "#666", marginTop: "10px", lineHeight: "1.6" }}>
+                <strong>Razonamiento:</strong> {recommendation.data.rationale}
               </div>
             )}
-            <div style={{ fontSize: "14px", color: "#666", marginTop: "10px" }}>
-              {recommendation.data.rationale}
-            </div>
             {recommendation.data.data_freshness?.is_stale && (
               <div style={{ color: "orange", marginTop: "10px" }}>
                 ⚠️ Datos antiguos: {recommendation.data.data_freshness.reason}
@@ -287,14 +389,26 @@ export function Dashboard() {
                 ({recommendation.data.data_window.window_days} días)
               </div>
             )}
-            {recommendation.data.as_of && (
+            {(recommendation.data.last_updated || recommendation.data.as_of) && (
               <div style={{ fontSize: "12px", color: "#999", marginTop: "5px" }}>
-                Última actualización: {new Date(recommendation.data.as_of).toLocaleString()}
+                Última actualización: {new Date(recommendation.data.last_updated || recommendation.data.as_of).toLocaleString()}
               </div>
             )}
-            {recommendation.data.candles_hash && (
+            {recommendation.data.backtest_period && (
+              <div style={{ fontSize: "12px", color: "#999", marginTop: "5px" }}>
+                Período del backtest: {recommendation.data.backtest_period.from_date ? new Date(recommendation.data.backtest_period.from_date).toLocaleDateString() : "N/A"} 
+                - {recommendation.data.backtest_period.to_date ? new Date(recommendation.data.backtest_period.to_date).toLocaleDateString() : "N/A"}
+                ({recommendation.data.backtest_period.window_days} días)
+              </div>
+            )}
+            {(recommendation.data.candles_hash || recommendation.data.backtest_hash) && (
               <div style={{ fontSize: "11px", color: "#999", marginTop: "5px", fontFamily: "monospace" }}>
-                Hash de velas: {recommendation.data.candles_hash.substring(0, 16)}...
+                {recommendation.data.candles_hash && (
+                  <div>{formatHash(recommendation.data.candles_hash, "Hash de velas", 16)}</div>
+                )}
+                {recommendation.data.backtest_hash && (
+                  <div style={{ marginTop: "2px" }}>{formatHash(recommendation.data.backtest_hash, "Hash de backtest", 16)}</div>
+                )}
               </div>
             )}
           </div>

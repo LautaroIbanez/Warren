@@ -184,11 +184,17 @@ class TestRiskEvaluationFunction:
 class TestRecommendationEndpoint:
     """Test recommendation endpoint blocking behavior."""
     
+    @patch('app.api.recommendation.validate_data_window')
+    @patch('app.api.recommendation.validate_gaps')
     @patch('app.api.recommendation.CandleRepository')
     @patch('app.api.recommendation.RiskRepository')
     @patch('app.api.recommendation.StrategyEngine')
-    def test_recommendation_blocks_on_poor_metrics(self, mock_strategy, mock_risk_repo, mock_candle_repo, client, temp_data_dir):
+    def test_recommendation_blocks_on_poor_metrics(self, mock_strategy, mock_risk_repo, mock_candle_repo, mock_validate_gaps, mock_validate_window, client, temp_data_dir):
         """Test that recommendation endpoint blocks signals when metrics are poor."""
+        # Mock validation functions
+        mock_validate_window.return_value = (True, None, {"window_days": 800})
+        mock_validate_gaps.return_value = (True, [], {})
+        
         # Setup mocks
         mock_candles = pd.DataFrame({
             'timestamp': pd.date_range('2022-01-01', periods=100, freq='D'),
@@ -221,6 +227,7 @@ class TestRecommendationEndpoint:
             },
             "validation": {
                 "trade_count": settings.MIN_TRADES_FOR_RELIABILITY - 5,
+                "window_days": 100,  # Insufficient window
                 "is_reliable": False
             }
         }
@@ -241,11 +248,17 @@ class TestRecommendationEndpoint:
         assert data["signal"] == "HOLD"
         assert data["block_reason"] is not None
     
+    @patch('app.api.recommendation.validate_data_window')
+    @patch('app.api.recommendation.validate_gaps')
     @patch('app.api.recommendation.CandleRepository')
     @patch('app.api.recommendation.RiskRepository')
     @patch('app.api.recommendation.StrategyEngine')
-    def test_recommendation_passes_with_good_metrics(self, mock_strategy, mock_risk_repo, mock_candle_repo, client):
+    def test_recommendation_passes_with_good_metrics(self, mock_strategy, mock_risk_repo, mock_candle_repo, mock_validate_gaps, mock_validate_window, client):
         """Test that recommendation endpoint passes signals when metrics are good."""
+        # Mock validation functions
+        mock_validate_window.return_value = (True, None, {"window_days": 800})
+        mock_validate_gaps.return_value = (True, [], {})
+        
         # Setup mocks
         mock_candles = pd.DataFrame({
             'timestamp': pd.date_range('2022-01-01', periods=100, freq='D'),
@@ -311,10 +324,16 @@ class TestRecommendationEndpoint:
         assert data.get("is_blocked") is not True  # Should not be blocked
         assert data["signal"] in ["BUY", "SELL", "HOLD"]
     
+    @patch('app.api.recommendation.validate_data_window')
+    @patch('app.api.recommendation.validate_gaps')
     @patch('app.api.recommendation.CandleRepository')
     @patch('app.api.recommendation.RiskRepository')
-    def test_recommendation_blocks_on_stale_cache(self, mock_risk_repo, mock_candle_repo, client):
+    def test_recommendation_blocks_on_stale_cache(self, mock_risk_repo, mock_candle_repo, mock_validate_gaps, mock_validate_window, client):
         """Test that recommendation blocks when cache is stale."""
+        # Mock validation functions
+        mock_validate_window.return_value = (True, None, {"window_days": 800})
+        mock_validate_gaps.return_value = (True, [], {})
+        
         mock_candles = pd.DataFrame({
             'timestamp': pd.date_range('2022-01-01', periods=100, freq='D'),
             'open': [40000] * 100,

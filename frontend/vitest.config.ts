@@ -7,6 +7,10 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: './src/test/setup.ts',
+    snapshotFormat: {
+      escapeString: true,
+      printBasicPrototype: false
+    }
   },
 });
 

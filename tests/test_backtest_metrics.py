@@ -28,13 +28,13 @@ class TestMetricCalculations:
         assert metrics["total_trades"] == len(trades)
     
     def test_profit_factor_with_only_wins(self, backtest_engine, winning_trades):
-        """Test profit factor when there are no losses (should be high/infinity)."""
+        """Test profit factor when there are no losses (should be null/infinity)."""
         equity_curve = self._create_simple_equity_curve(len(winning_trades))
         
         metrics = backtest_engine._calculate_metrics(winning_trades, equity_curve)
         
-        # When no losses, profit factor should be very high (999999.99)
-        assert metrics["profit_factor"] >= 999999.0
+        # When no losses, profit factor should be null (represents infinity)
+        assert metrics["profit_factor"] is None
     
     def test_profit_factor_with_only_losses(self, backtest_engine, losing_trades):
         """Test profit factor when there are no wins (should be 0)."""
@@ -86,9 +86,90 @@ class TestMetricCalculations:
         
         # Sharpe should be reasonable (not multiplied by 100)
         # For typical trading, Sharpe is usually between -2 and 5
+        assert metrics["sharpe_ratio"] is not None
         assert -10 < metrics["sharpe_ratio"] < 10
         # Should not be in percentage range (0-100)
         assert not (0 <= metrics["sharpe_ratio"] <= 100)
+    
+    def test_sharpe_ratio_insufficient_data(self, backtest_engine, mixed_trades):
+        """Test Sharpe ratio returns None when <2 return points."""
+        # Create equity curve with 2 points but same equity (no variation, only 1 return point after pct_change)
+        equity_curve = [
+            {"timestamp": "2022-01-01", "equity": 10000.0},
+            {"timestamp": "2022-01-02", "equity": 10000.0},  # Same equity = 0% return, but we need >=2 returns
+        ]
+        
+        # Actually need 3 points to get 2 return points after pct_change
+        # With 2 points, pct_change gives 1 return, which is <2
+        equity_curve = [
+            {"timestamp": "2022-01-01", "equity": 10000.0},
+            {"timestamp": "2022-01-02", "equity": 10000.0},
+        ]
+        
+        metrics = backtest_engine._calculate_metrics(mixed_trades, equity_curve)
+        
+        assert metrics["sharpe_ratio"] is None
+        assert metrics["sharpe_reason"] is not None
+        assert "Insufficient return points" in metrics["sharpe_reason"] or "1 < 2" in metrics["sharpe_reason"]
+    
+    def test_sharpe_ratio_zero_volatility(self, backtest_engine, mixed_trades):
+        """Test Sharpe ratio returns None when all returns are identical (zero volatility)."""
+        # Create equity curve with constant equity (zero volatility)
+        equity_curve = [
+            {"timestamp": "2022-01-01", "equity": 10000.0},
+            {"timestamp": "2022-01-02", "equity": 10000.0},
+            {"timestamp": "2022-01-03", "equity": 10000.0},
+        ]
+        
+        metrics = backtest_engine._calculate_metrics(mixed_trades, equity_curve)
+        
+        assert metrics["sharpe_ratio"] is None
+        assert metrics["sharpe_reason"] is not None
+        assert "Zero volatility" in metrics["sharpe_reason"]
+    
+    def test_cagr_sub_year_period(self, backtest_engine, mixed_trades):
+        """Test CAGR returns total_return with label when period < 1 year."""
+        # Create equity curve spanning less than 1 year
+        base_time = datetime(2022, 1, 1)
+        equity_curve = [
+            {"timestamp": base_time.isoformat(), "equity": 10000.0},
+            {"timestamp": (base_time + timedelta(days=180)).isoformat(), "equity": 11000.0},  # 6 months
+        ]
+        
+        metrics = backtest_engine._calculate_metrics(mixed_trades, equity_curve)
+        
+        # CAGR should equal total_return (not annualized)
+        expected_return = ((11000.0 - 10000.0) / 10000.0) * 100
+        assert metrics["cagr"] == pytest.approx(expected_return, rel=0.01)
+        assert metrics["cagr_label"] is not None
+        assert "not annualized" in metrics["cagr_label"].lower() or "period < 1 year" in metrics["cagr_label"].lower()
+    
+    def test_cagr_multi_year_period(self, backtest_engine, mixed_trades):
+        """Test CAGR is annualized when period >= 1 year."""
+        # Create equity curve spanning 2 years
+        base_time = datetime(2022, 1, 1)
+        equity_curve = [
+            {"timestamp": base_time.isoformat(), "equity": 10000.0},
+            {"timestamp": (base_time + timedelta(days=730)).isoformat(), "equity": 12100.0},  # 2 years, 21% total
+        ]
+        
+        metrics = backtest_engine._calculate_metrics(mixed_trades, equity_curve)
+        
+        # CAGR should be annualized (approximately 10% per year for 21% over 2 years)
+        assert metrics["cagr"] is not None
+        assert metrics["cagr_label"] == "Annualized"
+        # CAGR should be less than total return (annualized)
+        assert metrics["cagr"] < metrics["total_return"]
+    
+    def test_expectancy_has_currency_units(self, backtest_engine, mixed_trades):
+        """Test expectancy includes currency units label."""
+        equity_curve = self._create_simple_equity_curve(len(mixed_trades))
+        
+        metrics = backtest_engine._calculate_metrics(mixed_trades, equity_curve)
+        
+        assert "expectancy_units" in metrics
+        assert metrics["expectancy_units"] == "USD"
+        assert metrics["expectancy"] is not None
     
     def test_max_drawdown_calculation(self, backtest_engine, mixed_trades):
         """Test max drawdown calculation from equity curve."""
@@ -132,6 +213,10 @@ class TestMetricCalculations:
         assert metrics["win_rate"] == 0.0
         assert metrics["profit_factor"] == 0.0
         assert metrics["expectancy"] == 0.0
+        assert metrics["expectancy_units"] == "USD"
+        assert metrics["cagr"] is None
+        assert metrics["sharpe_ratio"] is None
+        assert metrics["sharpe_reason"] is not None
         assert metrics["is_reliable"] is False
     
     def _create_simple_equity_curve(self, num_points):

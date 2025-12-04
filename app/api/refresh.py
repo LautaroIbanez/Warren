@@ -90,8 +90,26 @@ async def refresh_data(
             }
         )
     
+    # Añadir metadata de timestamps y hashes al refresh_result
+    refresh_result_with_metadata = {
+        **refresh_result,
+        "timestamp": refresh_result.get("metadata", {}).get("as_of") if refresh_result.get("metadata") else None,
+        "candles_hash": None,
+        "last_updated": None
+    }
+    
+    # Intentar obtener metadata de candles para incluir en refresh_result
+    try:
+        from app.data.candle_repository import CandleRepository
+        candle_repo = CandleRepository()
+        _, candle_metadata = candle_repo.load(symbol, interval)
+        refresh_result_with_metadata["candles_hash"] = candle_metadata.get("source_file_hash")
+        refresh_result_with_metadata["last_updated"] = candle_metadata.get("as_of")
+    except Exception:
+        pass
+    
     return {
-        "refresh": refresh_result,
+        "refresh": refresh_result_with_metadata,
         "snapshots": snapshots,
         "errors": errors if errors else None
     }

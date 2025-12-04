@@ -51,6 +51,12 @@ class RiskRepository:
         """
         file_path = self._get_file_path(symbol, interval)
         
+        # Calcular confiabilidad considerando métricas y ventana de datos
+        metrics_reliable = metrics.get("is_reliable", False)
+        window_sufficient = window_days >= settings.MIN_DATA_WINDOW_DAYS
+        # La confiabilidad requiere tanto métricas válidas como ventana suficiente
+        overall_reliable = metrics_reliable and window_sufficient
+        
         # Preparar datos
         data = {
             "symbol": symbol,
@@ -60,8 +66,8 @@ class RiskRepository:
                 "trade_count": trade_count,
                 "window_days": window_days,
                 "min_trades_required": settings.MIN_TRADES_FOR_RELIABILITY,
-                "min_window_days": settings.MIN_WINDOW_DAYS,
-                "is_reliable": metrics.get("is_reliable", False)
+                "min_window_days": settings.MIN_DATA_WINDOW_DAYS,
+                "is_reliable": overall_reliable
             },
             "data_window": {
                 "from_date": from_date,

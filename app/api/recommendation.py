@@ -29,6 +29,7 @@ async def get_today_recommendation(
     interval = interval or settings.DEFAULT_INTERVAL
     
     candle_repo = CandleRepository()
+    backtest_repo = BacktestRepository()
     strategy_engine = StrategyEngine()
     
     try:
@@ -105,11 +106,15 @@ async def get_today_recommendation(
         
         risk_data, cache_validation = risk_repo.load(symbol, interval, candles_hash, candles_as_of)
         
+        # Obtener window_days de metadata de velas para validación
+        window_days = metadata.get("window_days")
+        
         # Evaluar si la señal debe ser bloqueada
         risk_evaluation = evaluate_risk_for_signal(
             risk_metrics=risk_data.get("metrics", {}) if risk_data else None,
             risk_validation=risk_data.get("validation", {}) if risk_data else None,
-            cache_validation=cache_validation
+            cache_validation=cache_validation,
+            window_days=window_days
         )
         
         # Si la señal está bloqueada o los datos están obsoletos, retornar respuesta bloqueada
@@ -124,12 +129,23 @@ async def get_today_recommendation(
                 for reason in block_reasons[1:]:
                     rationale_parts.append(f"  - {reason}")
             
+            # Incluir violaciones estructuradas si están disponibles
+            violations = risk_evaluation.get("violations", [])
+            if violations:
+                rationale_parts.append("Violaciones detectadas:")
+                for violation in violations:
+                    rationale_parts.append(f"  - {violation.get('message', 'Unknown violation')}")
+            
             # Incluir métricas si están disponibles
             if risk_data:
                 risk_metrics = risk_data.get("metrics", {})
                 metrics_info = []
-                if "profit_factor" in risk_metrics:
-                    metrics_info.append(f"Profit Factor: {risk_metrics['profit_factor']:.2f}")
+                pf = risk_metrics.get("profit_factor")
+                if pf is not None:
+                    metrics_info.append(f"Profit Factor: {pf:.2f}")
+                else:
+                    # None represents infinity (no losses, only profits)
+                    metrics_info.append("Profit Factor: ∞")
                 if "total_return" in risk_metrics:
                     metrics_info.append(f"Retorno Total: {risk_metrics['total_return']:.2f}%")
                 if "max_drawdown" in risk_metrics:
@@ -140,6 +156,35 @@ async def get_today_recommendation(
                 if metrics_info:
                     rationale_parts.append("Métricas del backtest: " + ", ".join(metrics_info))
             
+            # Obtener información de backtest para incluir período y last_updated
+            backtest_period = None
+            backtest_hash = None
+            last_updated = None
+            try:
+                backtest_data, _ = backtest_repo.load(symbol, interval, metadata.get("source_file_hash"), metadata.get("as_of"))
+                if backtest_data:
+                    backtest_metadata = backtest_data.get("metadata", {})
+                    backtest_hash = backtest_metadata.get("backtest_hash")
+                    backtest_data_window = backtest_metadata.get("data_window", {})
+                    if backtest_data_window:
+                        backtest_period = {
+                            "from_date": backtest_data_window.get("from_date"),
+                            "to_date": backtest_data_window.get("to_date"),
+                            "window_days": backtest_data_window.get("window_days")
+                        }
+                    if backtest_metadata.get("candles_as_of"):
+                        last_updated = backtest_metadata.get("candles_as_of")
+            except Exception:
+                pass
+            
+            # Si no hay backtest_period, usar data_window de candles
+            if not backtest_period:
+                backtest_period = {
+                    "from_date": metadata.get("from_date"),
+                    "to_date": metadata.get("to_date"),
+                    "window_days": metadata.get("window_days")
+                }
+            
             return {
                 "signal": "HOLD",
                 "confidence": 0.0,
@@ -149,6 +194,7 @@ async def get_today_recommendation(
                 "rationale": ". ".join(rationale_parts),
                 "as_of": metadata.get("as_of"),
                 "signal_timestamp": latest_candle_timestamp_str,
+                "last_updated": last_updated or metadata.get("as_of"),
                 "data_freshness": candle_repo.get_freshness(symbol, interval),
                 "data_window": {
                     "from_date": metadata.get("from_date"),
@@ -156,10 +202,13 @@ async def get_today_recommendation(
                     "window_days": metadata.get("window_days"),
                     "is_sufficient": True
                 },
+                "backtest_period": backtest_period,
                 "candles_hash": metadata.get("source_file_hash"),
+                "backtest_hash": backtest_hash,
                 "is_blocked": True,
                 "block_reason": block_reason,
                 "block_reasons": block_reasons,
+                "violations": risk_evaluation.get("violations", []),
                 "is_stale": risk_evaluation["is_stale"],
                 "stale_reason": risk_evaluation["stale_reason"]
             }
@@ -171,10 +220,41 @@ async def get_today_recommendation(
             candles=candles
         )
         
+        # Obtener información de backtest para incluir período
+        backtest_period = None
+        backtest_hash = None
+        last_updated = None
+        try:
+            backtest_data, _ = backtest_repo.load(symbol, interval, metadata.get("source_file_hash"), metadata.get("as_of"))
+            if backtest_data:
+                backtest_metadata = backtest_data.get("metadata", {})
+                backtest_hash = backtest_metadata.get("backtest_hash")
+                backtest_data_window = backtest_metadata.get("data_window", {})
+                if backtest_data_window:
+                    backtest_period = {
+                        "from_date": backtest_data_window.get("from_date"),
+                        "to_date": backtest_data_window.get("to_date"),
+                        "window_days": backtest_data_window.get("window_days")
+                    }
+                # Usar timestamp del backtest como last_updated si está disponible
+                if backtest_metadata.get("candles_as_of"):
+                    last_updated = backtest_metadata.get("candles_as_of")
+        except Exception:
+            pass  # Si no hay backtest, continuar sin esa información
+        
+        # Si no hay backtest_period, usar data_window de candles
+        if not backtest_period:
+            backtest_period = {
+                "from_date": metadata.get("from_date"),
+                "to_date": metadata.get("to_date"),
+                "window_days": metadata.get("window_days")
+            }
+        
         # Preparar respuesta
         response = recommendation.to_dict()
         response["as_of"] = metadata.get("as_of")  # Timestamp de última vela en archivo
         response["signal_timestamp"] = latest_candle_timestamp_str  # Timestamp de vela usada para señal
+        response["last_updated"] = last_updated or metadata.get("as_of")  # Última actualización (backtest o candles)
         response["data_freshness"] = candle_repo.get_freshness(symbol, interval)
         response["data_window"] = {
             "from_date": metadata.get("from_date"),
@@ -182,7 +262,9 @@ async def get_today_recommendation(
             "window_days": metadata.get("window_days"),
             "is_sufficient": True
         }
+        response["backtest_period"] = backtest_period  # Período del backtest usado
         response["candles_hash"] = metadata.get("source_file_hash")  # Hash para verificación
+        response["backtest_hash"] = backtest_hash  # Hash del backtest usado
         
         return response
     

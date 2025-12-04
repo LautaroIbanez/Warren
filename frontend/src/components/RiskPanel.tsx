@@ -1,6 +1,7 @@
 /** Panel de métricas de riesgo. */
 import type { RiskMetrics } from "../types";
 import { formatPercent, formatCurrency, formatNumber } from "../utils/formatting";
+import { formatHash } from "../utils/hash";
 
 interface RiskPanelProps {
   data: RiskMetrics | null;
@@ -66,7 +67,7 @@ export function RiskPanel({ data, loading, error }: RiskPanelProps) {
         <div className="metric-card">
           <div className="metric-label">Profit Factor</div>
           <div className="metric-value">
-            {metrics.profit_factor >= 999999 
+            {metrics.profit_factor === null || metrics.profit_factor === undefined
               ? "∞" 
               : formatNumber(metrics.profit_factor)}
           </div>
@@ -75,17 +76,27 @@ export function RiskPanel({ data, loading, error }: RiskPanelProps) {
         <div className="metric-card">
           <div className="metric-label">Expectancy</div>
           <div className="metric-value">{formatCurrency(metrics.expectancy)}</div>
-          <div className="metric-hint">Ganancia esperada por trade</div>
+          <div className="metric-hint">
+            Ganancia esperada por trade {metrics.expectancy_units ? `(${metrics.expectancy_units})` : ""}
+          </div>
         </div>
         <div className="metric-card">
           <div className="metric-label">CAGR</div>
-          <div className="metric-value">{formatPercent(metrics.cagr)}</div>
-          <div className="metric-hint">Retorno anualizado</div>
+          <div className="metric-value">
+            {metrics.cagr === null || metrics.cagr === undefined ? "N/A" : formatPercent(metrics.cagr)}
+          </div>
+          <div className="metric-hint">
+            {metrics.cagr_label || (metrics.cagr !== null && metrics.cagr !== undefined ? "Retorno anualizado" : "No disponible")}
+          </div>
         </div>
         <div className="metric-card">
           <div className="metric-label">Sharpe Ratio</div>
-          <div className="metric-value">{formatNumber(metrics.sharpe_ratio)}</div>
-          <div className="metric-hint">Riesgo ajustado</div>
+          <div className="metric-value">
+            {metrics.sharpe_ratio === null || metrics.sharpe_ratio === undefined ? "N/A" : formatNumber(metrics.sharpe_ratio)}
+          </div>
+          <div className="metric-hint">
+            {metrics.sharpe_reason || (metrics.sharpe_ratio !== null && metrics.sharpe_ratio !== undefined ? "Riesgo ajustado" : "No disponible")}
+          </div>
         </div>
         <div className="metric-card">
           <div className="metric-label">Max Drawdown</div>
@@ -103,7 +114,15 @@ export function RiskPanel({ data, loading, error }: RiskPanelProps) {
         </div>
       </div>
       <div className="validation-info" style={{ marginTop: "15px", fontSize: "12px", color: "#666" }}>
-        {data.data_window && (
+        {data.backtest_period && (
+          <div>
+            Período del backtest: {data.backtest_period.from_date ? new Date(data.backtest_period.from_date).toLocaleDateString() : "N/A"} 
+            - {data.backtest_period.to_date ? new Date(data.backtest_period.to_date).toLocaleDateString() : "N/A"}
+            ({data.backtest_period.window_days} días)
+            {metrics.period_years && ` (${metrics.period_years.toFixed(2)} años)`}
+          </div>
+        )}
+        {!data.backtest_period && data.data_window && (
           <div>
             Período: {data.data_window.from_date ? new Date(data.data_window.from_date).toLocaleDateString() : "N/A"} 
             - {data.data_window.to_date ? new Date(data.data_window.to_date).toLocaleDateString() : "N/A"}
@@ -112,6 +131,11 @@ export function RiskPanel({ data, loading, error }: RiskPanelProps) {
         )}
         <div>Ventana: {validation.window_days} días | Trades: {validation.trade_count}</div>
         <div>Estado: <strong style={{ color: isReliable ? "green" : "orange" }}>{status.toUpperCase()}</strong></div>
+        {data.last_updated && (
+          <div style={{ marginTop: "5px" }}>
+            Última actualización: {new Date(data.last_updated).toLocaleString()}
+          </div>
+        )}
         {cache_info && (
           <div style={{ marginTop: "5px", fontSize: "11px" }}>
             {cache_info.cached ? (
@@ -120,8 +144,8 @@ export function RiskPanel({ data, loading, error }: RiskPanelProps) {
               <span style={{ color: "#17a2b8" }}>↻ Recomputado</span>
             )}
             {cacheValidation?.cached_hash && (
-              <span style={{ marginLeft: "10px", color: "#999" }}>
-                Hash: {cacheValidation.cached_hash.substring(0, 8)}...
+              <span style={{ marginLeft: "10px", color: "#999", fontFamily: "monospace", fontSize: "11px" }}>
+                {formatHash(cacheValidation.cached_hash, "Hash", 8)}
               </span>
             )}
           </div>
@@ -129,6 +153,16 @@ export function RiskPanel({ data, loading, error }: RiskPanelProps) {
         {reason && (
           <div style={{ color: "orange", marginTop: "5px" }}>
             ⚠️ {reason}
+          </div>
+        )}
+        {(data.candles_hash || data.backtest_hash) && (
+          <div style={{ marginTop: "10px", fontSize: "11px", color: "#999", fontFamily: "monospace" }}>
+            {data.candles_hash && (
+              <div>{formatHash(data.candles_hash, "Hash de velas", 16)}</div>
+            )}
+            {data.backtest_hash && (
+              <div style={{ marginTop: "2px" }}>{formatHash(data.backtest_hash, "Hash de backtest", 16)}</div>
+            )}
           </div>
         )}
       </div>
