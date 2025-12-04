@@ -14,8 +14,10 @@ export interface Recommendation {
   candles_hash?: string;  // Hash de las velas usadas
   is_stale_signal?: boolean;  // Si la señal está basada en datos antiguos
   stale_reason?: string;  // Razón por la que la señal está stale
-  is_blocked?: boolean;  // Si la señal fue bloqueada por backtest negativo
-  block_reason?: string;  // Razón por la que la señal fue bloqueada
+  is_blocked?: boolean;  // Si la señal fue bloqueada por evaluación de riesgo
+  block_reason?: string;  // Razón principal por la que la señal fue bloqueada
+  block_reasons?: string[];  // Lista detallada de todas las razones de bloqueo
+  is_stale?: boolean;  // Si los datos de riesgo están obsoletos
   data_freshness?: {
     as_of: string;
     is_stale: boolean;

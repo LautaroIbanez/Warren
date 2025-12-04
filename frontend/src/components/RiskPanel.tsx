@@ -1,5 +1,6 @@
 /** Panel de métricas de riesgo. */
 import type { RiskMetrics } from "../types";
+import { formatPercent, formatCurrency, formatNumber } from "../utils/formatting";
 
 interface RiskPanelProps {
   data: RiskMetrics | null;
@@ -43,7 +44,12 @@ export function RiskPanel({ data, loading, error }: RiskPanelProps) {
       
       {!isReliable && (
         <div className="warning-banner" style={{ background: "#fff3cd", padding: "10px", marginBottom: "15px", borderRadius: "4px" }}>
-          <strong>⚠️ Advertencia:</strong> {reason || "Métricas no confiables - datos insuficientes"}
+          <strong>⚠️ Advertencia:</strong>{" "}
+          {metrics.total_trades < validation.min_trades_required ? (
+            <span>Solo {metrics.total_trades} trades (se necesitan {validation.min_trades_required}+)</span>
+          ) : (
+            <span>{reason || "Métricas no confiables - datos insuficientes"}</span>
+          )}
         </div>
       )}
       <div className="metrics-grid" style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "15px" }}>
@@ -54,40 +60,44 @@ export function RiskPanel({ data, loading, error }: RiskPanelProps) {
         </div>
         <div className="metric-card">
           <div className="metric-label">Win Rate</div>
-          <div className="metric-value">{metrics.win_rate.toFixed(2)}%</div>
+          <div className="metric-value">{formatPercent(metrics.win_rate)}</div>
           <div className="metric-hint">Tasa de aciertos</div>
         </div>
         <div className="metric-card">
           <div className="metric-label">Profit Factor</div>
-          <div className="metric-value">{metrics.profit_factor.toFixed(2)}</div>
+          <div className="metric-value">
+            {metrics.profit_factor >= 999999 
+              ? "∞" 
+              : formatNumber(metrics.profit_factor)}
+          </div>
           <div className="metric-hint">Ganancia / Pérdida</div>
         </div>
         <div className="metric-card">
           <div className="metric-label">Expectancy</div>
-          <div className="metric-value">${metrics.expectancy.toFixed(2)}</div>
+          <div className="metric-value">{formatCurrency(metrics.expectancy)}</div>
           <div className="metric-hint">Ganancia esperada por trade</div>
         </div>
         <div className="metric-card">
           <div className="metric-label">CAGR</div>
-          <div className="metric-value">{metrics.cagr.toFixed(2)}%</div>
+          <div className="metric-value">{formatPercent(metrics.cagr)}</div>
           <div className="metric-hint">Retorno anualizado</div>
         </div>
         <div className="metric-card">
           <div className="metric-label">Sharpe Ratio</div>
-          <div className="metric-value">{metrics.sharpe_ratio.toFixed(2)}</div>
+          <div className="metric-value">{formatNumber(metrics.sharpe_ratio)}</div>
           <div className="metric-hint">Riesgo ajustado</div>
         </div>
         <div className="metric-card">
           <div className="metric-label">Max Drawdown</div>
           <div className="metric-value" style={{ color: metrics.max_drawdown > 20 ? "red" : "inherit" }}>
-            {metrics.max_drawdown.toFixed(2)}%
+            {formatPercent(metrics.max_drawdown)}
           </div>
           <div className="metric-hint">Máxima caída</div>
         </div>
         <div className="metric-card">
           <div className="metric-label">Total Return</div>
           <div className="metric-value" style={{ color: metrics.total_return > 0 ? "green" : "red" }}>
-            {metrics.total_return.toFixed(2)}%
+            {formatPercent(metrics.total_return)}
           </div>
           <div className="metric-hint">Retorno total</div>
         </div>

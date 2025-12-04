@@ -34,6 +34,14 @@ export function useBacktestTrades() {
     }
   };
 
+  const updateData = (newTrades: Trade[] | null, newEquityCurve: any[] | null, newMetrics: any | null, newError: string | null = null) => {
+    setTrades(newTrades || []);
+    setEquityCurve(newEquityCurve || []);
+    setMetrics(newMetrics);
+    setError(newError);
+    setLoading(false);
+  };
+
   return {
     trades,
     equityCurve,
@@ -41,6 +49,7 @@ export function useBacktestTrades() {
     loading,
     error,
     refetch: loadBacktest,
+    updateData,
   };
 }
 

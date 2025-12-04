@@ -31,6 +31,13 @@ export function useCandles() {
     }
   };
 
-  return { data, loading, error, metadata, refetch: loadCandles };
+  const updateData = (newData: Candle[] | null, newMetadata: any = null, newError: string | null = null) => {
+    setData(newData || []);
+    setMetadata(newMetadata);
+    setError(newError);
+    setLoading(false);
+  };
+
+  return { data, loading, error, metadata, refetch: loadCandles, updateData };
 }
 

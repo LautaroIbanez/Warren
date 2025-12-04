@@ -25,6 +25,12 @@ export function useRiskMetrics() {
     }
   };
 
-  return { data, loading, error, refetch: loadRiskMetrics };
+  const updateData = (newData: RiskMetrics | null, newError: string | null = null) => {
+    setData(newData);
+    setError(newError);
+    setLoading(false);
+  };
+
+  return { data, loading, error, refetch: loadRiskMetrics, updateData };
 }
 

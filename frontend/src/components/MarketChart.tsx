@@ -11,6 +11,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import type { Candle, Trade, Recommendation } from "../types";
+import { formatCurrency } from "../utils/formatting";
 
 interface MarketChartProps {
   candles: Candle[];
@@ -110,9 +111,9 @@ export function MarketChart({ candles, trades, recommendation, candlesMetadata }
                   return (
                     <div className="chart-tooltip" style={{ background: "white", padding: "10px", border: "1px solid #ccc" }}>
                       <p><strong>Fecha:</strong> {data.time}</p>
-                      <p><strong>Close:</strong> ${data.close.toFixed(2)}</p>
-                      <p><strong>High:</strong> ${data.high.toFixed(2)}</p>
-                      <p><strong>Low:</strong> ${data.low.toFixed(2)}</p>
+                      <p><strong>Close:</strong> {formatCurrency(data.close)}</p>
+                      <p><strong>High:</strong> {formatCurrency(data.high)}</p>
+                      <p><strong>Low:</strong> {formatCurrency(data.low)}</p>
                     </div>
                   );
                 }
@@ -133,7 +134,7 @@ export function MarketChart({ candles, trades, recommendation, candlesMetadata }
                 y={slLevel}
                 stroke="red"
                 strokeDasharray="5 5"
-                label={{ value: `SL: $${slLevel.toFixed(2)} (Recomendación)`, position: "right" }}
+                label={{ value: `SL: ${formatCurrency(slLevel)} (Recomendación)`, position: "right" }}
               />
             )}
             {/* Take Profit de recomendación actual */}
@@ -142,7 +143,7 @@ export function MarketChart({ candles, trades, recommendation, candlesMetadata }
                 y={tpLevel}
                 stroke="green"
                 strokeDasharray="5 5"
-                label={{ value: `TP: $${tpLevel.toFixed(2)} (Recomendación)`, position: "right" }}
+                label={{ value: `TP: ${formatCurrency(tpLevel)} (Recomendación)`, position: "right" }}
               />
             )}
           </LineChart>
@@ -154,7 +155,7 @@ export function MarketChart({ candles, trades, recommendation, candlesMetadata }
         <div style={{ marginTop: "10px", fontSize: "12px" }}>
           <strong>Trades históricos:</strong> {trades.length} | 
           {trades.length > 0 && (
-            <> Último: {trades[trades.length - 1]?.signal} @ ${trades[trades.length - 1]?.entry_price.toFixed(2)}</>
+            <> Último: {trades[trades.length - 1]?.signal} @ {formatCurrency(trades[trades.length - 1]?.entry_price)}</>
           )}
         </div>
       )}

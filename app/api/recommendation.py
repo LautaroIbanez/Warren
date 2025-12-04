@@ -5,6 +5,7 @@ import pandas as pd
 
 from app.config import settings
 from app.core.strategy import StrategyEngine
+from app.core.backtest import evaluate_risk_for_signal
 from app.data.candle_repository import CandleRepository
 from app.data.validation import validate_data_window, validate_gaps, validate_data_quality
 from app.data.risk_repository import RiskRepository
@@ -97,40 +98,71 @@ async def get_today_recommendation(
                     "stale_reason": f"Last candle is {hours_old:.1f} hours old"
                 }
         
-        # Verificar si backtest es claramente perdedor (bloquear señal)
+        # Evaluar riesgo usando función centralizada
         risk_repo = RiskRepository()
         candles_hash = metadata.get("source_file_hash")
         candles_as_of = metadata.get("as_of")
         
-        risk_data, _ = risk_repo.load(symbol, interval, candles_hash, candles_as_of)
-        if risk_data:
-            risk_metrics = risk_data.get("metrics", {})
-            profit_factor = risk_metrics.get("profit_factor", 0)
-            total_return = risk_metrics.get("total_return", 0)
-            is_reliable = risk_metrics.get("is_reliable", False)
+        risk_data, cache_validation = risk_repo.load(symbol, interval, candles_hash, candles_as_of)
+        
+        # Evaluar si la señal debe ser bloqueada
+        risk_evaluation = evaluate_risk_for_signal(
+            risk_metrics=risk_data.get("metrics", {}) if risk_data else None,
+            risk_validation=risk_data.get("validation", {}) if risk_data else None,
+            cache_validation=cache_validation
+        )
+        
+        # Si la señal está bloqueada o los datos están obsoletos, retornar respuesta bloqueada
+        if risk_evaluation["is_blocked"] or risk_evaluation["is_stale"]:
+            block_reason = risk_evaluation["block_reason"] or risk_evaluation["stale_reason"] or "Signal blocked due to risk evaluation"
+            block_reasons = risk_evaluation["block_reasons"] or [block_reason]
             
-            # Bloquear señal si backtest es claramente perdedor
-            if profit_factor < 1.0 or total_return < 0:
-                return {
-                    "signal": "HOLD",
-                    "confidence": 0.0,
-                    "entry_price": None,
-                    "stop_loss": None,
-                    "take_profit": None,
-                    "rationale": f"Signal blocked: Backtest shows negative performance (Profit Factor: {profit_factor:.2f}, Total Return: {total_return:.2f}%). Trading is not recommended.",
-                    "as_of": metadata.get("as_of"),
-                    "signal_timestamp": latest_candle_timestamp_str,
-                    "data_freshness": candle_repo.get_freshness(symbol, interval),
-                    "data_window": {
-                        "from_date": metadata.get("from_date"),
-                        "to_date": metadata.get("to_date"),
-                        "window_days": metadata.get("window_days"),
-                        "is_sufficient": True
-                    },
-                    "candles_hash": metadata.get("source_file_hash"),
-                    "is_blocked": True,
-                    "block_reason": f"Backtest shows negative performance (PF: {profit_factor:.2f}, Return: {total_return:.2f}%)"
-                }
+            # Construir rationale detallado
+            rationale_parts = [f"Señal bloqueada: {block_reason}"]
+            if len(block_reasons) > 1:
+                rationale_parts.append("Razones adicionales:")
+                for reason in block_reasons[1:]:
+                    rationale_parts.append(f"  - {reason}")
+            
+            # Incluir métricas si están disponibles
+            if risk_data:
+                risk_metrics = risk_data.get("metrics", {})
+                metrics_info = []
+                if "profit_factor" in risk_metrics:
+                    metrics_info.append(f"Profit Factor: {risk_metrics['profit_factor']:.2f}")
+                if "total_return" in risk_metrics:
+                    metrics_info.append(f"Retorno Total: {risk_metrics['total_return']:.2f}%")
+                if "max_drawdown" in risk_metrics:
+                    metrics_info.append(f"Max Drawdown: {risk_metrics['max_drawdown']:.2f}%")
+                if "total_trades" in risk_metrics:
+                    metrics_info.append(f"Total Trades: {risk_metrics['total_trades']}")
+                
+                if metrics_info:
+                    rationale_parts.append("Métricas del backtest: " + ", ".join(metrics_info))
+            
+            return {
+                "signal": "HOLD",
+                "confidence": 0.0,
+                "entry_price": None,
+                "stop_loss": None,
+                "take_profit": None,
+                "rationale": ". ".join(rationale_parts),
+                "as_of": metadata.get("as_of"),
+                "signal_timestamp": latest_candle_timestamp_str,
+                "data_freshness": candle_repo.get_freshness(symbol, interval),
+                "data_window": {
+                    "from_date": metadata.get("from_date"),
+                    "to_date": metadata.get("to_date"),
+                    "window_days": metadata.get("window_days"),
+                    "is_sufficient": True
+                },
+                "candles_hash": metadata.get("source_file_hash"),
+                "is_blocked": True,
+                "block_reason": block_reason,
+                "block_reasons": block_reasons,
+                "is_stale": risk_evaluation["is_stale"],
+                "stale_reason": risk_evaluation["stale_reason"]
+            }
         
         # Generar recomendación
         recommendation = strategy_engine.generate_recommendation(

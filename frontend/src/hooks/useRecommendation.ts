@@ -28,6 +28,12 @@ export function useRecommendation() {
     }
   };
 
-  return { data, loading, error, refetch: loadRecommendation };
+  const updateData = (newData: Recommendation | null, newError: string | null = null) => {
+    setData(newData);
+    setError(newError);
+    setLoading(false);
+  };
+
+  return { data, loading, error, refetch: loadRecommendation, updateData };
 }
 

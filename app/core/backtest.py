@@ -1,5 +1,5 @@
 """BacktestEngine - Simula trades usando señales de StrategyEngine."""
-from typing import Optional
+from typing import Optional, Dict, List
 from dataclasses import dataclass
 from datetime import datetime
 import pandas as pd
@@ -370,38 +370,30 @@ class BacktestEngine:
                 "reason": "No trades generated"
             }
         
-        # Trades ganadores y perdedores (usar pnl_pct para métricas porcentuales)
-        winning_trades = [t for t in trades if t.pnl_pct and t.pnl_pct > 0]
-        losing_trades = [t for t in trades if t.pnl_pct and t.pnl_pct <= 0]
+        # Clasificar trades: ganadores, perdedores, y breakeven (neutral)
+        # Usar pnl nominal para clasificación consistente
+        winning_trades = [t for t in trades if t.pnl is not None and t.pnl > 0]
+        losing_trades = [t for t in trades if t.pnl is not None and t.pnl < 0]
+        breakeven_trades = [t for t in trades if t.pnl is not None and t.pnl == 0]
         
         total_trades = len(trades)
         win_count = len(winning_trades)
+        # Win rate: solo cuenta trades ganadores, breakeven son neutrales (no cuentan como wins ni losses)
         win_rate = (win_count / total_trades) * 100 if total_trades > 0 else 0.0
         
-        # Profit factor (usar P&L porcentual para reflejar retorno sobre capital)
-        # Sumamos los pnl_pct ponderados por el valor de posición
-        total_profit_pct_weighted = sum(
-            t.pnl_pct * (t.position_value or 0) / 100.0 
-            for t in winning_trades 
-            if t.pnl_pct is not None and t.position_value
-        ) if winning_trades else 0.0
+        # Profit factor: sum(positive pnl) / abs(sum(negative pnl)) usando unidades consistentes (nominal)
+        total_gross_profit = sum(t.pnl for t in winning_trades if t.pnl is not None) if winning_trades else 0.0
+        total_gross_loss = abs(sum(t.pnl for t in losing_trades if t.pnl is not None)) if losing_trades else 0.0
+        # Si no hay pérdidas, profit factor es muy alto (representa infinito para JSON)
+        # Si no hay ganancias, profit factor es 0
+        if total_gross_loss > 0:
+            profit_factor = total_gross_profit / total_gross_loss
+        elif total_gross_profit > 0:
+            profit_factor = 999999.99  # Sin pérdidas pero con ganancias (representa infinito)
+        else:
+            profit_factor = 0.0  # Sin ganancias ni pérdidas (solo breakeven)
         
-        total_loss_pct_weighted = abs(sum(
-            t.pnl_pct * (t.position_value or 0) / 100.0 
-            for t in losing_trades 
-            if t.pnl_pct is not None and t.position_value
-        )) if losing_trades else 0.0
-        
-        # Alternativa: usar promedio de pnl_pct (más simple y refleja retorno por trade)
-        avg_profit_pct = sum(t.pnl_pct for t in winning_trades) / len(winning_trades) if winning_trades else 0.0
-        avg_loss_pct = abs(sum(t.pnl_pct for t in losing_trades) / len(losing_trades)) if losing_trades else 0.0
-        profit_factor = avg_profit_pct / avg_loss_pct if avg_loss_pct > 0 else 0.0
-        
-        # Expectancy (P&L porcentual promedio por trade)
-        total_pnl_pct = sum(t.pnl_pct for t in trades if t.pnl_pct is not None) if trades else 0.0
-        expectancy_pct = total_pnl_pct / total_trades if total_trades > 0 else 0.0
-        
-        # Expectancy en valor nominal (para compatibilidad con UI)
+        # Expectancy: promedio de P&L nominal por trade (incluye breakeven como 0)
         total_pnl = sum(t.pnl for t in trades if t.pnl is not None) if trades else 0.0
         expectancy = total_pnl / total_trades if total_trades > 0 else 0.0
         
@@ -430,18 +422,20 @@ class BacktestEngine:
             cagr = total_return  # Si es menos de un año, usar total_return
         
         # Calcular Sharpe Ratio usando retornos diarios de equity_curve
+        # Sharpe Ratio estándar: (Mean Return - Risk Free Rate) / Std Dev * sqrt(252)
+        # Sin escalado arbitrario de porcentaje
         equity_df['returns'] = equity_df['equity'].pct_change()
         daily_returns = equity_df['returns'].dropna()
         
         if len(daily_returns) > 1:
-            # Sharpe = (Mean Return - Risk Free Rate) / Std Dev * sqrt(252)
             # Asumimos risk-free rate = 0 para simplificar
             mean_daily_return = daily_returns.mean()
             std_daily_return = daily_returns.std()
             
             if std_daily_return > 0:
                 # Annualizar: multiplicar por sqrt(252) para días de trading
-                sharpe_ratio = (mean_daily_return / std_daily_return) * np.sqrt(252) * 100  # En porcentaje
+                # Sin multiplicar por 100 - Sharpe ratio es adimensional
+                sharpe_ratio = (mean_daily_return / std_daily_return) * np.sqrt(252)
             else:
                 sharpe_ratio = 0.0
         else:
@@ -514,4 +508,113 @@ class BacktestEngine:
             "is_reliable": False,
             "reason": reason
         }
+
+
+def evaluate_risk_for_signal(
+    risk_metrics: Optional[Dict],
+    risk_validation: Optional[Dict] = None,
+    cache_validation: Optional[Dict] = None
+) -> Dict:
+    """
+    Evalúa si una señal debe ser bloqueada basándose en métricas de riesgo y validación de cache.
+    
+    Esta función centraliza toda la lógica de bloqueo de señales considerando:
+    - Profit factor mínimo
+    - Retorno total mínimo
+    - Drawdown máximo
+    - Número mínimo de trades
+    - Confiabilidad del backtest
+    - Frescura y coherencia del cache
+    
+    Args:
+        risk_metrics: Dict con métricas de riesgo (profit_factor, total_return, max_drawdown, etc.)
+        risk_validation: Dict con validación de riesgo (is_reliable, trade_count, etc.)
+        cache_validation: Dict con validación de cache (is_stale, is_inconsistent, reason, etc.)
+    
+    Returns:
+        Dict con:
+        - is_blocked: bool - Si la señal debe ser bloqueada
+        - block_reason: str - Razón principal del bloqueo (None si no está bloqueada)
+        - block_reasons: List[str] - Lista detallada de todas las razones de bloqueo
+        - is_stale: bool - Si los datos están obsoletos
+        - stale_reason: str - Razón por la que los datos están obsoletos
+    """
+    result = {
+        "is_blocked": False,
+        "block_reason": None,
+        "block_reasons": [],
+        "is_stale": False,
+        "stale_reason": None
+    }
+    
+    # Verificar si el cache está stale o inconsistente
+    if cache_validation:
+        if cache_validation.get("is_stale", False):
+            result["is_stale"] = True
+            result["stale_reason"] = cache_validation.get("reason", "Cache data is stale")
+            result["is_blocked"] = True
+            result["block_reason"] = result["stale_reason"]
+            result["block_reasons"].append(result["stale_reason"])
+            return result
+        
+        if cache_validation.get("is_inconsistent", False):
+            result["is_blocked"] = True
+            result["block_reason"] = cache_validation.get("reason", "Cache data is inconsistent")
+            result["block_reasons"].append(result["block_reason"])
+            return result
+    
+    # Si no hay métricas de riesgo, no podemos evaluar
+    if not risk_metrics:
+        result["is_blocked"] = True
+        result["block_reason"] = "No risk metrics available"
+        result["block_reasons"].append(result["block_reason"])
+        return result
+    
+    # Extraer métricas
+    profit_factor = risk_metrics.get("profit_factor", 0.0)
+    total_return = risk_metrics.get("total_return", 0.0)
+    max_drawdown = risk_metrics.get("max_drawdown", 0.0)
+    total_trades = risk_metrics.get("total_trades", 0)
+    is_reliable = risk_metrics.get("is_reliable", False)
+    
+    # Si hay validación de riesgo, usar esos valores si están disponibles
+    if risk_validation:
+        total_trades = risk_validation.get("trade_count", total_trades)
+        is_reliable = risk_validation.get("is_reliable", is_reliable)
+    
+    # Evaluar criterios de bloqueo
+    block_reasons = []
+    
+    # 1. Verificar número mínimo de trades
+    if total_trades < settings.MIN_TRADES_FOR_RELIABILITY:
+        reason = f"Insuficientes trades: {total_trades} < {settings.MIN_TRADES_FOR_RELIABILITY} mínimo requerido"
+        block_reasons.append(reason)
+    
+    # 2. Verificar confiabilidad del backtest
+    if not is_reliable:
+        reason = f"Backtest no confiable: {risk_metrics.get('reason', 'Razón desconocida')}"
+        block_reasons.append(reason)
+    
+    # 3. Verificar profit factor mínimo
+    if profit_factor < settings.MIN_PROFIT_FACTOR:
+        reason = f"Profit factor insuficiente: {profit_factor:.2f} < {settings.MIN_PROFIT_FACTOR} mínimo requerido"
+        block_reasons.append(reason)
+    
+    # 4. Verificar retorno total mínimo
+    if total_return <= settings.MIN_TOTAL_RETURN_PCT:
+        reason = f"Retorno total insuficiente: {total_return:.2f}% <= {settings.MIN_TOTAL_RETURN_PCT}% mínimo requerido"
+        block_reasons.append(reason)
+    
+    # 5. Verificar drawdown máximo
+    if max_drawdown > settings.MAX_DRAWDOWN_PCT:
+        reason = f"Drawdown máximo excedido: {max_drawdown:.2f}% > {settings.MAX_DRAWDOWN_PCT}% máximo permitido"
+        block_reasons.append(reason)
+    
+    # Si hay alguna razón de bloqueo, marcar como bloqueada
+    if block_reasons:
+        result["is_blocked"] = True
+        result["block_reason"] = block_reasons[0]  # Primera razón como principal
+        result["block_reasons"] = block_reasons
+    
+    return result
 

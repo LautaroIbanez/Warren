@@ -38,7 +38,31 @@ export async function refreshData(): Promise<any> {
     method: "POST",
   });
   if (!response.ok) {
-    throw new Error(`Failed to refresh data: ${response.statusText}`);
+    // Intentar parsear el error del backend
+    let errorMessage = `Failed to refresh data: ${response.statusText}`;
+    try {
+      const errorData = await response.json();
+      if (errorData.detail) {
+        if (typeof errorData.detail === "string") {
+          errorMessage = errorData.detail;
+        } else if (errorData.detail.message) {
+          errorMessage = errorData.detail.message;
+          // Incluir información adicional si está disponible
+          if (errorData.detail.errors) {
+            const errorList = Object.entries(errorData.detail.errors)
+              .map(([key, msg]) => `${key}: ${msg}`)
+              .join(", ");
+            errorMessage += ` (${errorList})`;
+          }
+        }
+      }
+    } catch {
+      // Si no se puede parsear, usar el mensaje por defecto
+    }
+    const error = new Error(errorMessage);
+    // Agregar información adicional al error para manejo en el componente
+    (error as any).status = response.status;
+    throw error;
   }
   return response.json();
 }

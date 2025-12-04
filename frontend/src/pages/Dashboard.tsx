@@ -7,6 +7,7 @@ import { useRiskMetrics } from "../hooks/useRiskMetrics";
 import { MarketChart } from "../components/MarketChart";
 import { RiskPanel } from "../components/RiskPanel";
 import { refreshData } from "../api/client";
+import { formatPercent, formatCurrency } from "../utils/formatting";
 
 export function Dashboard() {
   const recommendation = useRecommendation();
@@ -22,25 +23,74 @@ export function Dashboard() {
       setRefreshing(true);
       setRefreshError(null);
       
-      // Limpiar datos previos antes de refrescar
-      // Esto asegura que no se reutilicen series viejas
+      // Llamar al endpoint de refresh que retorna snapshots sincronizados
+      const refreshResponse = await refreshData();
       
-      await refreshData();
+      // Verificar si el refresh fue exitoso
+      if (!refreshResponse.refresh?.success) {
+        const errorMsg = refreshResponse.refresh?.error || "Error desconocido durante el refresh";
+        setRefreshError(`Error en refresh: ${errorMsg}`);
+        return;
+      }
       
-      // Refrescar todos los datos secuencialmente para asegurar sincronización
-      await recommendation.refetch();
-      await candles.refetch();
-      await backtest.refetch();
-      await risk.refetch();
+      // Actualizar estado usando snapshots directamente (sin llamadas adicionales)
+      const { snapshots, errors } = refreshResponse;
       
-      // Verificar sincronización de hashes después del refresh
-      if (recommendation.data?.candles_hash && candles.metadata?.candles_hash) {
-        if (recommendation.data.candles_hash !== candles.metadata.candles_hash) {
-          setRefreshError("Advertencia: Los datos de recomendación y velas no están sincronizados. Por favor, refresca nuevamente.");
+      // Actualizar recomendación
+      if (snapshots.recommendation) {
+        recommendation.updateData(snapshots.recommendation, null);
+      } else if (errors?.recommendation) {
+        recommendation.updateData(null, errors.recommendation);
+      }
+      
+      // Actualizar candles
+      if (snapshots.candles) {
+        candles.updateData(
+          snapshots.candles.candles || [],
+          snapshots.candles.metadata || null,
+          null
+        );
+      } else if (errors?.candles) {
+        candles.updateData([], null, errors.candles);
+      }
+      
+      // Actualizar backtest
+      if (snapshots.backtest) {
+        backtest.updateData(
+          snapshots.backtest.trades || [],
+          snapshots.backtest.equity_curve || [],
+          snapshots.backtest.metrics || null,
+          null
+        );
+      } else if (errors?.backtest) {
+        backtest.updateData([], [], null, errors.backtest);
+      }
+      
+      // Actualizar risk
+      if (snapshots.risk) {
+        risk.updateData(snapshots.risk, null);
+      } else if (errors?.risk) {
+        risk.updateData(null, errors.risk);
+      }
+      
+      // Verificar sincronización de hashes (deberían coincidir ahora)
+      if (snapshots.recommendation?.candles_hash && snapshots.candles?.metadata?.candles_hash) {
+        if (snapshots.recommendation.candles_hash !== snapshots.candles.metadata.candles_hash) {
+          setRefreshError("Advertencia: Los hashes de recomendación y velas no coinciden después del refresh.");
         }
       }
+      
+      // Mostrar advertencias si hay errores parciales
+      if (errors && Object.keys(errors).length > 0) {
+        const errorCount = Object.keys(errors).length;
+        const errorList = Object.entries(errors).map(([key, msg]) => `${key}: ${msg}`).join(", ");
+        setRefreshError(`Advertencia: ${errorCount} snapshot(s) fallaron: ${errorList}`);
+      }
+      
     } catch (err) {
-      setRefreshError(err instanceof Error ? err.message : "Error al refrescar");
+      // Manejar errores de red o parsing
+      const errorMessage = err instanceof Error ? err.message : "Error desconocido al refrescar";
+      setRefreshError(`Error al refrescar: ${errorMessage}`);
     } finally {
       setRefreshing(false);
     }
@@ -115,27 +165,51 @@ export function Dashboard() {
               </div>
             )}
             
-            {/* Alerta de señal bloqueada */}
+            {/* Alerta de señal bloqueada - Mostrar prominentemente */}
             {recommendation.data.is_blocked && (
               <div style={{ 
                 background: "#f8d7da", 
-                padding: "15px", 
-                marginBottom: "15px", 
-                borderRadius: "4px",
-                borderLeft: "4px solid #dc3545"
+                padding: "20px", 
+                marginBottom: "20px", 
+                borderRadius: "8px",
+                borderLeft: "6px solid #dc3545",
+                boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
               }}>
-                <strong>🚫 Señal Bloqueada:</strong>
-                <p style={{ margin: "5px 0 0 0", fontSize: "14px" }}>
-                  {recommendation.data.block_reason || "Backtest muestra rendimiento negativo"}
-                </p>
-                <p style={{ margin: "5px 0 0 0", fontSize: "12px", color: "#666" }}>
-                  {recommendation.data.rationale}
-                </p>
+                <div style={{ fontSize: "20px", fontWeight: "bold", color: "#dc3545", marginBottom: "10px" }}>
+                  🚫 Señal Bloqueada
+                </div>
+                {recommendation.data.block_reason && (
+                  <div style={{ fontSize: "16px", fontWeight: "600", marginBottom: "10px", color: "#721c24" }}>
+                    {recommendation.data.block_reason}
+                  </div>
+                )}
+                {recommendation.data.block_reasons && recommendation.data.block_reasons.length > 1 && (
+                  <div style={{ marginTop: "10px", marginBottom: "10px" }}>
+                    <div style={{ fontSize: "14px", fontWeight: "600", marginBottom: "5px", color: "#721c24" }}>
+                      Razones detalladas:
+                    </div>
+                    <ul style={{ margin: "5px 0", paddingLeft: "20px", fontSize: "14px", color: "#721c24" }}>
+                      {recommendation.data.block_reasons.map((reason, idx) => (
+                        <li key={idx} style={{ marginBottom: "5px" }}>{reason}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {recommendation.data.rationale && (
+                  <div style={{ marginTop: "10px", fontSize: "13px", color: "#721c24", lineHeight: "1.5" }}>
+                    {recommendation.data.rationale}
+                  </div>
+                )}
+                {recommendation.data.candles_hash && (
+                  <div style={{ marginTop: "10px", fontSize: "11px", color: "#999", fontFamily: "monospace" }}>
+                    Hash de datos: {recommendation.data.candles_hash.substring(0, 16)}...
+                  </div>
+                )}
               </div>
             )}
             
-            {/* Alerta de señal stale */}
-            {recommendation.data.is_stale_signal && !recommendation.data.is_blocked && (
+            {/* Alerta de señal stale o datos obsoletos - Amarillo (warning) */}
+            {(recommendation.data.is_stale_signal || recommendation.data.is_stale) && !recommendation.data.is_blocked && (
               <div style={{ 
                 background: "#fff3cd", 
                 padding: "15px", 
@@ -145,8 +219,31 @@ export function Dashboard() {
               }}>
                 <strong>⚠️ Señal Antigua:</strong>
                 <p style={{ margin: "5px 0 0 0", fontSize: "14px" }}>
-                  {recommendation.data.stale_reason || "No hay nuevas velas disponibles"}
+                  {recommendation.data.stale_reason || recommendation.data.is_stale_signal || "No hay nuevas velas disponibles"}
                 </p>
+              </div>
+            )}
+            
+            {/* Advertencia de confiabilidad - Amarillo (warning) cuando hay datos pero no son confiables */}
+            {risk.data && !risk.data.validation.is_reliable && !recommendation.data.is_blocked && (
+              <div style={{ 
+                background: "#fff3cd", 
+                padding: "15px", 
+                marginBottom: "15px", 
+                borderRadius: "4px",
+                borderLeft: "4px solid #ffc107"
+              }}>
+                <strong>⚠️ Advertencia de Confiabilidad:</strong>
+                {risk.data.metrics.total_trades < risk.data.validation.min_trades_required && (
+                  <p style={{ margin: "5px 0 0 0", fontSize: "14px" }}>
+                    Solo {risk.data.metrics.total_trades} trades (se necesitan {risk.data.validation.min_trades_required}+)
+                  </p>
+                )}
+                {risk.data.reason && (
+                  <p style={{ margin: "5px 0 0 0", fontSize: "13px", color: "#666" }}>
+                    {risk.data.reason}
+                  </p>
+                )}
               </div>
             )}
             
@@ -161,17 +258,17 @@ export function Dashboard() {
                 >
                   {recommendation.data.signal}
                 </span>
-                <span>Confianza: {(recommendation.data.confidence * 100).toFixed(1)}%</span>
+                <span>Confianza: {formatPercent(recommendation.data.confidence * 100, 1)}</span>
               </div>
             )}
             {recommendation.data.entry_price && (
               <div style={{ marginBottom: "10px" }}>
-                <strong>Entry:</strong> ${recommendation.data.entry_price.toFixed(2)}
+                <strong>Entry:</strong> {formatCurrency(recommendation.data.entry_price)}
                 {recommendation.data.stop_loss && (
-                  <> | <strong>SL:</strong> ${recommendation.data.stop_loss.toFixed(2)}</>
+                  <> | <strong>SL:</strong> {formatCurrency(recommendation.data.stop_loss)}</>
                 )}
                 {recommendation.data.take_profit && (
-                  <> | <strong>TP:</strong> ${recommendation.data.take_profit.toFixed(2)}</>
+                  <> | <strong>TP:</strong> {formatCurrency(recommendation.data.take_profit)}</>
                 )}
               </div>
             )}
@@ -193,6 +290,11 @@ export function Dashboard() {
             {recommendation.data.as_of && (
               <div style={{ fontSize: "12px", color: "#999", marginTop: "5px" }}>
                 Última actualización: {new Date(recommendation.data.as_of).toLocaleString()}
+              </div>
+            )}
+            {recommendation.data.candles_hash && (
+              <div style={{ fontSize: "11px", color: "#999", marginTop: "5px", fontFamily: "monospace" }}>
+                Hash de velas: {recommendation.data.candles_hash.substring(0, 16)}...
               </div>
             )}
           </div>
@@ -233,4 +335,5 @@ export function Dashboard() {
     </div>
   );
 }
+
 
